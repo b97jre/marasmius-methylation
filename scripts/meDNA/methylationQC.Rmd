@@ -1,0 +1,565 @@
+---
+title: "Methylation QC steps"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+    date: "2024-09-11"
+---
+
+# Setup
+```{r setup, include=FALSE , message=FALSE}
+
+#if (!require("BiocManager", quietly = TRUE))
+#    install.packages("BiocManager")
+
+#library(ropls)
+
+#install.packages("pls")
+#library(pls)
+knitr::opts_chunk$set(echo = TRUE)
+library(GenomicRanges)
+library(GenomicFeatures)
+library(tidyverse)
+library(here)
+library(DT)
+
+
+#  BiocManager::install('PCAtools')
+library(PCAtools)
+library(patchwork)
+library(gridExtra)
+
+
+select = dplyr::select
+
+
+types = c("Stipe","Lamella","Spore","control")
+colors = c("#96c176ff","#cf9ddbff","#4472C4ff","#000000FF")
+types = c("Stipe","Lamella","Spore","control","stipe","lamella","spore")
+colors = c("#96c176ff","#cf9ddbff","#4472C4ff","#000000FF","#96c176ff","#cf9ddbff","#4472C4ff")
+names(colors) = types
+  
+
+annotationColors = c("mRNA" = "#4472C4","TE" = "#C00000","Both" = "#9D475B","intergenic" = "#AFABAB")
+
+
+
+methylationLevelColors = my_colors <- c(
+  "Nothing"   = "#4575b4",
+  "Low"  = "#91bfdb",
+  "Medium"  = "#e0f3f8",
+  "High"  = "#fee090",
+  "All" = "#d73027"
+)
+
+
+
+```
+
+
+
+
+# Annotation
+
+
+
+### TE reference
+```{r, message=FALSE}
+gff3Colnames =c("seqid", "source",
+                "type","start",
+                "end", "score",
+                "strand","phase",
+                "attributes")
+
+
+  TE.classes = read_csv(file = here("annotation","Repeat.classes.csv")) %>%
+    rename(TEfamily = "Name") %>%
+    rename(Notes = "Superfamily / Notes")
+
+  
+  TEFile <- here("annotation","Maror2.repeatmasker.rmlib2.3.gff")
+
+  TEdf =    read_tsv(file = TEFile, col_names = gff3Colnames,comment = "#") %>% separate(attributes, into = c("ID","target"), sep = ";") %>%
+    mutate(ID = as.numeric(gsub("ID=","",ID))) %>%
+    separate(target, into = c("Target","motif",
+                              "motifStart","motifStop"),
+             sep = " ") %>%
+    mutate(motif = gsub("\"","",motif))%>%
+    mutate(motif = gsub("Motif:","",motif))  %>%
+    select(seqid,start,end,score,
+           strand, ID,motif,
+           motifStart,motifStop) %>%
+    rename(TEID = "ID") %>%
+    mutate(TE_ID2 = 1:n()) %>%
+    mutate(motifStart = as.numeric(gsub(" ","",motifStart))) %>%
+    mutate(motifStop = as.numeric(gsub(" ","",motifStop))) %>%
+    dplyr::rename(TEclass = "motif") %>%
+    mutate(TEclass = gsub(" ","",TEclass)) %>%
+    mutate(TEclass = gsub("Maror","",TEclass)) 
+
+ 
+
+  TEs = makeGRangesFromDataFrame(TEdf,
+                                 seqnames.field = "seqid", 
+                                 start.field = "start", 
+                                 end.field = "end",
+                                 strand.field = "strand",
+                                 keep.extra.columns = TRUE)
+  
+
+TEdf%>%
+  separate(TEclass, into = c("TEfamily","nr"), sep = "-",remove = FALSE) %>%
+  inner_join(TE.classes)->
+  TEdf
+
+TEdf %>%
+  group_by(TEfamily) %>% summarise(n = n(), min = min(motifStart), max = max(motifStop)) %>%
+  mutate(TElength = max - min) %>%
+  filter(TElength > 1000) %>%
+  inner_join(TEdf) %>%
+  mutate(fraction =(motifStop-motifStart) / TElength)->
+  TEdf.long
+
+TEdf.long  %>% separate(TEclass, into = c("TEfamily","nr"), sep = "-",remove = FALSE) ->
+  TEdf.long
+
+TEdf.long %>% 
+  inner_join(TE.classes) %>% 
+  filter(grepl("DNA",Class)) %>%
+  ggplot(aes(x = nr, y = fraction)) + 
+  geom_boxplot() +
+  theme_minimal() + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1,vjust = 0.5))+ 
+  facet_grid(Class~TEfamily, scales = "free_x", space = "free") -> 
+  TE.distribution.ClassII.plot
+
+TEdf.long %>% 
+  inner_join(TE.classes) %>% 
+  filter(grepl("Retro",Class)) %>%
+    ggplot(aes(x = nr, y = fraction)) + 
+  geom_boxplot() +
+  theme_minimal() + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1,vjust = 0.5))+ 
+  facet_grid(Class~TEfamily, scales = "free_x", space = "free") -> 
+ TE.distribution.ClassI.plot
+
+TEdf.long %>% 
+  inner_join(TE.classes) %>% 
+  filter(!grepl("DNA",Class)) %>%
+  filter(!grepl("Retro",Class)) %>%
+  ggplot(aes(x = nr, y = fraction)) + 
+  geom_boxplot() +
+  theme_minimal() + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1,vjust = 0.5))+ 
+  facet_grid(.~TEfamily, scales = "free_x", space = "free") -> 
+ TE.distribution.Other.plot
+
+
+TE.distribution.ClassI.plot+
+  TE.distribution.ClassII.plot+
+  TE.distribution.Other.plot +
+  plot_annotation(tag_levels = 'A')+plot_layout(ncol = 1) ->
+  TE.distribution.plots
+
+ggsave(here("results","annotation","TE.distribution.plots.pdf"),
+       TE.distribution.plots,
+       width = 10, height = 15, units = "in", dpi = 300)
+
+  
+TEdf.long %>% arrange(TEclass, -fraction) %>% 
+  filter(fraction > 0.25) %>%
+  datatable(
+  filter = 'top',                             # Adds search space
+  extensions = 'Buttons',                     # Adds export buttons
+  options = list(
+    pageLength = 10,                          # Visar 10 rader åt gången
+    autoWidth = TRUE,
+    dom = 'Bfrtip',                           # Bestämmer var knappar/sök/tabell hamnar
+    buttons = c('copy', 'csv', 'excel', 'pdf')
+  ),
+  rownames = FALSE,
+  caption = 'Tabell 1: Table with TE annotation.'
+)
+
+```
+
+
+## Gene reference 
+```{r, message=FALSE}
+
+gtfFile = here("annotation","GCF_018924745.1_UU_Maror_2_genomic.gff")	
+txdb <- txdbmaker::makeTxDbFromGFF(file=gtfFile, dataSource="ensemblgenomes",format = "gff3")
+
+
+gff3Colnames =c("seqid", "source",
+                "type","start",
+                "end", "score",
+                "strand","phase",
+                "attributes")
+
+  annotation.df =    read_tsv(file = gtfFile, col_names = gff3Colnames,comment = "#") 
+
+
+ annotation.df %>% filter(type =="mRNA") %>%
+   group_by(seqid,start,end, strand) %>%
+   slice_head(n = 1) %>%
+   ungroup() %>%
+   separate_longer_delim(attributes, delim = ";") ->
+   test
+ 
+  test %>% select(seqid,start,end,strand,attributes) %>%
+   separate(attributes, into = c("key","value"), sep = "=") %>%
+   filter(key %in% c("Name","locus_tag","product")) %>%
+   pivot_wider(values_from = "value",names_from = "key") -> 
+   annotation.mRNA.df
+
+ annotation.mRNA.df %>% group_by(product) %>% summarise(n = n())
+ 
+annotation.mRNA.df %>% select(seqid,start,end, strand,Name,locus_tag,product) %>%
+  mutate(tx_id = 1:n()) -> 
+  annotation.mRNA.df
+
+mRNAs = makeGRangesFromDataFrame(annotation.mRNA.df,
+                                 seqnames.field = "seqid", 
+                                 start.field = "start", 
+                                 end.field = "end",
+                                 strand.field = "strand",
+                                 keep.extra.columns = TRUE)
+  
+
+```
+
+Run only once for getting relationship between protein ID (XP) and gene ID (XM)
+```{r, inlcude false  , message=FALSE}
+
+gene2ProteinFile = here("annotation","gene2protein_relationship.csv")
+if(file.exists(gene2ProteinFile)){
+  relationship_df = read_csv(gene2ProteinFile)
+# Load the GFF file
+gff_df <- read_tsv(gtfFile, comment = "#", col_names = FALSE)
+
+
+filtered_gff <- gff_df %>%
+  filter(grepl("Parent=rna-XM_", X9) | grepl("ID=cds-XP_", X9))
+
+# Use mutate with regex replacements to extract and clean XM_ID and XP_ID
+relationship_df <- filtered_gff %>%
+  mutate(
+    XM_ID = sub(".*Parent=rna-(XM_[^;]+).*", "\\1", X9),
+    XP_ID = sub(".*ID=cds-(XP_[^;]+).*", "\\1", X9)
+  ) %>%
+  # Filter out rows where either XM_ID or XP_ID are missing or invalid
+  filter(grepl("XM_", XM_ID) & grepl("XP_", XP_ID)) %>%
+  # Select only the XM_ID and XP_ID columns and keep distinct pairs
+  select(XM_ID, XP_ID) %>%
+  distinct()
+
+write_csv(relationship_df,gene2ProteinFile)
+}else{
+  relationship_df = read_csv(gene2ProteinFile)
+}
+
+relationship_df %>% mutate(Name = XM_ID) -> relationship_df
+annotation.mRNA.df = inner_join(annotation.mRNA.df,relationship_df , by = "Name")
+```
+
+## Distance between RNA and TEs
+```{r, message=FALSE}
+# Find the nearest TE for each mRNA
+# query = mRNAs, subject = TEs
+nearest_hits <- distanceToNearest(mRNAs, TEs, ignore.strand=TRUE)
+# Extract results into a readable format
+# This creates a data frame with mRNA index, TE index, and the distance
+results <- as.data.frame(nearest_hits)
+
+# Optional: Merge metadata to see which mRNA is near which TE
+results$locus_tag <- mRNAs$locus_tag[results$queryHits]
+results$TE_ID2   <- TEs$TE_ID2[results$subjectHits] # Replace 'name' with your TE column name
+
+results %>%
+  select(locus_tag, TE_ID2, distance) ->
+  GeneBody_TE_distance
+
+```
+
+
+
+
+
+
+# Samples 
+```{r, message=FALSE}
+
+select = dplyr::select
+
+samples.ring.methyl.df = read_csv(file = here("data","meDNA","meDNA.metaData.csv"))
+
+
+samples.ring.methyl.df %>% arrange(Tissue,Location,Replicate) -> 
+  samples.ring.methyl.df
+
+
+samples.ring.methyl.df %>% group_by(Tissue,Location) %>% summarise(n = n()) %>%
+  pivot_wider(names_from = "Location", values_from = "n")->
+  samples.ring.methyl.df.summary
+
+
+
+# make the directory if it does not exist
+dir.create(here("results","meDNA"), showWarnings = FALSE, recursive = TRUE)
+
+# Open the PDF device
+pdf(here("results","meDNA","meDNA.samples.summary"), width = 8, height = 11)
+# Draw the table
+grid.table(samples.ring.methyl.df.summary)
+# Close the device
+dev.off()
+
+```
+
+# Data 
+Data from Nextflow transformed into one table in LoadMethylationData.Rmd
+```{r, message=FALSE}
+methylationDataFile = "~/MarasmiusMethylationRNA/data/methylationData.samples.csv"
+methylationDataFile.QC = "~/MarasmiusMethylationRNA/data/methylationData.samples.QC.csv.gz"
+
+if(!file.exists(methylationDataFile.QC)){
+  methylationData.3 = read_csv(methylationDataFile)
+  # Remove sites with no sample data
+  methylationData.3 %>% filter(!is.na(Sample))->methylationData.3
+}
+```
+
+
+
+## Initial data analysis
+```{r, message=FALSE}
+if(!file.exists(methylationDataFile.QC)){
+
+methylationData.3 %>% group_by(Location,Tissue) %>%
+  mutate(Replicate2 = dense_rank(Replicate))->
+  methylationData.3
+
+
+
+methylationData.3 %>% group_by(Location,Replicate2,Replicate,Tissue) %>%
+  summarise(n = n(), mean = mean(depth), median = median(depth)) -> 
+  methylationData.3.summary
+
+methylationData.3.summary %>% 
+  mutate(Location = factor(Location, levels = c("west","northwest","north","northeast")))%>%
+  mutate(Tissue = factor(Tissue, levels = c("stipe","lamella","spore"))) %>%
+  mutate(IDsample = paste(Tissue,Location,Replicate2,sep = "_")) %>%
+  arrange(Location,Replicate2,Tissue) %>%
+  mutate(IDsample = factor(IDsample, levels = IDsample)) ->
+  methylationData.3.summary
+
+
+methylationData.3.summary %>%
+  ggplot(aes(x = IDsample, y = mean, fill = Tissue),color = "grey") +
+  geom_hline(yintercept = 10, linetype = "dashed") +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = colors) + 
+  theme_light() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1,vjust = 0.5)) +  
+  facet_grid(.~Location, space = "free", scales = "free_x") ->
+  methylationData.3.summary.plot
+
+methylationData.3.summary %>%
+  dplyr::select(Location, Replicate2,Tissue,mean) %>%
+  arrange(Replicate2,Tissue) %>%
+  ungroup() %>%
+  dplyr::select(-Replicate) %>%
+  pivot_wider(values_from = "mean", names_from = "Location")%>%
+  dplyr::rename(replicate = "Replicate2") ->
+  methylationData.3.summary.wide
+  
+
+my_table <- tableGrob(methylationData.3.summary.wide)
+
+# Wrap the table for patchwork
+table_plot <- wrap_elements(my_table)
+
+
+write_csv(methylationData.3.summary.wide,"~/MarasmiusMethylationRNA/data/methylationData.samples.summary.csv")
+methylationData.3.summary.plot/table_plot
+ggsave("~/MarasmiusMethylationRNA/suppFigures/methylationData.samples.summary.pdf",width = 10, height = 8, units = "in", dpi = 300)
+
+}
+```
+
+
+### QC intial
+Done only once!
+```{r, message=FALSE}
+if(!file.exists(methylationDataFile.QC)){
+methylationData.3.summary %>%
+  ggplot(aes(x = IDsample, y = mean, fill = Tissue)) +
+  geom_bar(stat = "identity", color = "grey") +
+  geom_hline(yintercept = 10, linetype = "dashed", color = "red") +
+  scale_fill_manual(values = colors) + 
+  facet_grid(. ~ Location, space = "free", scales = "free_x") +
+  labs(
+    title = "Mean Methylation Levels per Sample",
+    x = "Sample ID",
+    y = "Average reads depth",
+    fill = "Tissue Type"
+  ) +
+  theme_light() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, vjust = 0.5),
+    plot.title = element_text(hjust = 0.5)
+  ) ->
+  methylationData.3.summary.plot
+
+methylationData.3.summary %>% filter(mean > 10) -> methylationData.3.summary.qc
+
+
+methylationData.3 %>% 
+  group_by(seqid,start) %>%
+  summarise(depth = mean(depth), percent = mean(percent)) %>%
+  ungroup() ->
+  methylationData.3.summary.sites
+
+methylationData.3 %>% inner_join(methylationData.3.summary.qc) ->
+  methylationData.3.QC
+
+
+
+methylationData.3.QC %>% 
+  ggplot(aes(x = depth)) + 
+  geom_density(fill = "steelblue", alpha = 0.6, adjust = 5) +  # smoother line
+  geom_vline(xintercept = 10, linetype = "dashed", color = "red") +  # threshold
+  annotate("text", x = 2, y = Inf, label = "Depth < 10 removed", 
+           vjust = 2, hjust = 0, color = "red", size = 3.5) +
+  scale_x_log10() +
+  coord_cartesian(xlim = c(1, 100)) +
+  labs(
+    title = "Distribution of Methylation Depth (log10)",
+    x = "Depth (log10 scale)",
+    y = "Density"
+  ) +
+  theme_minimal() ->QC.10filter.plot
+
+methylationData.3.QC %>% filter(depth > 10 ) -> methylationData.3.QC
+
+
+
+## Removing sites that are all 100% methylated or not methylated at all
+methylationData.3.QC %>% group_by(seqid,start) %>%
+  summarise(n = n(), percent = mean(percent)) -> 
+methylationData.3.QC.location
+
+
+methylationData.3.QC.location %>%
+  ggplot(aes(x = percent)) +
+  geom_density(fill = "steelblue", alpha = 0.6, adjust = 0.02) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
+  geom_vline(xintercept = 100, linetype = "dashed", color = "red") +
+  annotate("text", x = 0.02, y = Inf, label = "0% average methylation removed",
+           vjust = 2, hjust = 0, color = "red", size = 3.5) +
+  annotate("text", x = 100, y = Inf, label = "100% average methylation removed",
+           vjust = 2, hjust = 1, color = "red", size = 3.5) +
+  labs(
+    title = "Distribution of Mean Methylation Across Samples",
+    x = "Mean Methylation (0 to 100 percent)",
+    y = "Density"
+  ) +
+  theme_minimal() -> methylationData.3.QC.location.plot
+  
+
+methylationData.3.QC.location %>% filter( percent > 0 & percent < 100) %>%
+  select(seqid,start) %>% inner_join(methylationData.3.QC) ->
+  methylationData.3.QC
+
+
+methylationData.3.QC.location %>% filter( percent > 0 & percent < 100)->
+  methylationData.3.QC.location
+## Removing sites with depth less than 10 reads
+
+methylationData.3.QC.location %>%
+  ggplot(aes(x = n)) +
+  geom_histogram(fill = "steelblue", alpha = 0.6,binwidth = 1) +
+  geom_vline(xintercept = 10, linetype = "dashed", color = "red") +
+  annotate("text", x = 10, y = Inf, label = "sites found in less than 10 samples removed",
+           vjust = 2, hjust = 1, color = "red", size = 3.5) +
+  labs(
+    title = "Samples across sites",
+    x = "Number of samples with\n coverage at a site (n)",
+    y = "Number of sites"
+  ) +
+  theme_minimal() -> nrOfSamples.plot2
+
+methylationData.3.QC.location %>%ungroup() %>% distinct(n) 
+
+  methylationData.3.QC.location %>% filter(n > 10) ->
+    methylationData.3.QC.location
+    
+    
+  
+methylationData.3.QC.location%>%
+  select(seqid,start) %>%
+  inner_join(methylationData.3.QC) ->
+  methylationData.3.QC
+
+layout  <- "AB
+CC
+DD"
+
+methylationData.3.summary.plot + 
+  QC.10filter.plot +
+  methylationData.3.QC.location.plot+
+  nrOfSamples.plot2 + 
+  plot_layout(design = layout)+
+  plot_annotation(tag_levels = 'A')->
+  QC.plots
+ggsave("~/MarasmiusMethylationRNA//suppFigures/QC.methylation.pdf",
+       QC.plots, # your patchwork object
+      width = 21,
+      height = 24,
+  units = "cm"
+       )
+
+ggsave("~/MarasmiusMethylationRNA/suppFigures/QC.methylation.png",
+       dpi = 300,
+       QC.plots, # your patchwork object
+      width = 21,
+        
+      height = 24,
+  units = "cm"
+       )
+
+}
+
+
+
+```
+
+
+
+
+### Remove  sites annotated as both
+
+```{r, message=FALSE}
+
+if(!file.exists(methylationDataFile.QC)){
+
+methylationData.3.QC %>% filter(location != "Both") ->
+  methylationData.3.QC
+
+methylationData.3.QC %>% 
+  mutate(location = gsub("mRNA","GeneBody",location )) %>%
+    mutate(location = gsub("intergenic","Intergenic",location ))->
+  methylationData.3.QC
+
+
+
+write_csv(methylationData.3.QC,methylationDataFile.QC)
+}else{
+  methylationData.3.QC = read_csv(methylationDataFile.QC)
+}
+
+
+```

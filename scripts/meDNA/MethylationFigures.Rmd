@@ -1,0 +1,3240 @@
+---
+title: "Methylation pattern"
+output: html_document
+date: "2024-09-11"
+---
+
+## setup
+```{r setup, include=FALSE}
+
+#if (!require("BiocManager", quietly = TRUE))
+#    install.packages("BiocManager")
+
+#library(ropls)
+
+#install.packages("pls")
+#library(pls)
+knitr::opts_chunk$set(echo = TRUE)
+library(GenomicRanges)
+library(GenomicFeatures)
+library(tidyverse)
+library(here)
+
+
+#  BiocManager::install('PCAtools')
+library(PCAtools)
+library(patchwork)
+library(gridExtra)
+
+
+select = dplyr::select
+
+
+types = c("Stipe","Lamella","Spore","control")
+colors = c("#96c176ff","#cf9ddbff","#4472C4ff","#000000FF")
+types = c("Stipe","Lamella","Spore","control","stipe","lamella","spore")
+colors = c("#96c176ff","#cf9ddbff","#4472C4ff","#000000FF","#96c176ff","#cf9ddbff","#4472C4ff")
+names(colors) = types
+  
+
+annotationColors = c("mRNA" = "#4472C4","TE" = "#C00000","Both" = "#9D475B","intergenic" = "#AFABAB")
+
+
+
+methylationLevelColors = my_colors <- c(
+  "Nothing"   = "#4575b4",
+  "Low"  = "#91bfdb",
+  "Medium"  = "#e0f3f8",
+  "High"  = "#fee090",
+  "All" = "#d73027"
+)
+
+
+
+```
+
+
+
+
+## Annotation
+
+
+## Samples 
+```{r}
+
+select = dplyr::select
+
+samples.ring.methyl.df = read_csv(file = here("data","meDNA","meDNA.metaData.csv"))
+
+
+samples.ring.methyl.df %>% arrange(Tissue,Location,Replicate) -> 
+  samples.ring.methyl.df
+
+
+samples.ring.methyl.df %>% group_by(Tissue,Location) %>% summarise(n = n()) %>%
+  pivot_wider(names_from = "Location", values_from = "n")->
+  samples.ring.methyl.df.summary
+
+
+
+# make the directory if it does not exist
+dir.create(here("results","meDNA"), showWarnings = FALSE, recursive = TRUE)
+
+# Open the PDF device
+pdf(here("results","meDNA","meDNA.samples.summary"), width = 8, height = 11)
+# Draw the table
+grid.table(samples.ring.methyl.df.summary)
+# Close the device
+dev.off()
+
+```
+
+## Data 
+Data from Nextflow transformed into one table in LoadMethylationData.Rmd
+```{r}
+methylationDataFile = "~/MarasmiusMethylationRNA/data/methylationData.samples.csv"
+methylationDataFile.QC = "~/MarasmiusMethylationRNA/data/methylationData.samples.QC.csv.gz"
+
+if(!file.exists(methylationDataFile.QC)){
+  methylationData.3 = read_csv(methylationDataFile)
+  # Remove sites with no sample data
+  methylationData.3 %>% filter(!is.na(Sample))->methylationData.3
+}
+```
+
+
+### TE reference
+```{r}
+gff3Colnames =c("seqid", "source",
+                "type","start",
+                "end", "score",
+                "strand","phase",
+                "attributes")
+
+
+  TE.classes = read_csv(file = here("annotation","Repeat.classes.csv")) %>%
+    rename(TEfamily = "Name") %>%
+    rename(Notes = "Superfamily / Notes")
+
+  
+  TEFile <- here("annotation","Maror2.repeatmasker.rmlib2.3.gff")
+
+  TEdf =    read_tsv(file = TEFile, col_names = gff3Colnames,comment = "#") %>% separate(attributes, into = c("ID","target"), sep = ";") %>%
+    mutate(ID = as.numeric(gsub("ID=","",ID))) %>%
+    separate(target, into = c("Target","motif",
+                              "motifStart","motifStop"),
+             sep = " ") %>%
+    mutate(motif = gsub("\"","",motif))%>%
+    mutate(motif = gsub("Motif:","",motif))  %>%
+    select(seqid,start,end,score,
+           strand, ID,motif,
+           motifStart,motifStop) %>%
+    rename(TEID = "ID") %>%
+    mutate(TE_ID2 = 1:n()) %>%
+    mutate(motifStart = as.numeric(gsub(" ","",motifStart))) %>%
+    mutate(motifStop = as.numeric(gsub(" ","",motifStop))) %>%
+    dplyr::rename(TEclass = "motif") %>%
+    mutate(TEclass = gsub(" ","",TEclass)) %>%
+    mutate(TEclass = gsub("Maror","",TEclass)) 
+
+ 
+
+  TEs = makeGRangesFromDataFrame(TEdf,
+                                 seqnames.field = "seqid", 
+                                 start.field = "start", 
+                                 end.field = "end",
+                                 strand.field = "strand",
+                                 keep.extra.columns = TRUE)
+  
+
+TEdf%>%
+  separate(TEclass, into = c("TEfamily","nr"), sep = "-",remove = FALSE) %>%
+  inner_join(TE.classes)->
+  TEdf
+
+TEdf %>%
+  group_by(TEfamily) %>% summarise(n = n(), min = min(motifStart), max = max(motifStop)) %>%
+  mutate(TElength = max - min) %>%
+  filter(TElength > 1000) %>%
+  inner_join(TEdf) %>%
+  mutate(fraction =(motifStop-motifStart) / TElength)->
+  TEdf.long
+
+TEdf.long  %>% separate(TEclass, into = c("TEfamily","nr"), sep = "-",remove = FALSE) ->
+  TEdf.long
+
+TEdf.long %>% 
+  inner_join(TE.classes) %>% 
+  filter(grepl("DNA",Class)) %>%
+  ggplot(aes(x = nr, y = fraction)) + 
+  geom_boxplot() +
+  theme_minimal() + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1,vjust = 0.5))+ 
+  facet_grid(Class~TEfamily, scales = "free_x", space = "free") -> 
+  TE.distribution.ClassII.plot
+
+TEdf.long %>% 
+  inner_join(TE.classes) %>% 
+  filter(grepl("Retro",Class)) %>%
+    ggplot(aes(x = nr, y = fraction)) + 
+  geom_boxplot() +
+  theme_minimal() + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1,vjust = 0.5))+ 
+  facet_grid(Class~TEfamily, scales = "free_x", space = "free") -> 
+ TE.distribution.ClassI.plot
+
+TEdf.long %>% 
+  inner_join(TE.classes) %>% 
+  filter(!grepl("DNA",Class)) %>%
+  filter(!grepl("Retro",Class)) %>%
+  ggplot(aes(x = nr, y = fraction)) + 
+  geom_boxplot() +
+  theme_minimal() + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1,vjust = 0.5))+ 
+  facet_grid(.~TEfamily, scales = "free_x", space = "free") -> 
+ TE.distribution.Other.plot
+
+
+TE.distribution.ClassI.plot+
+  TE.distribution.ClassII.plot+
+  TE.distribution.Other.plot +
+  plot_annotation(tag_levels = 'A')+plot_layout(ncol = 1) ->
+  TE.distribution.plots
+
+ggsave(here("results","annotation","TE.distribution.plots.pdf"),
+       TE.distribution.plots,
+       width = 10, height = 15, units = "in", dpi = 300)
+
+  
+TEdf.long %>% arrange(TEclass, -fraction) %>% 
+  filter(fraction > 0.25)
+
+```
+
+
+### Gene reference 
+```{r}
+
+gtfFile = here("annotation","GCF_018924745.1_UU_Maror_2_genomic.gff")	
+txdb <- makeTxDbFromGFF(file=gtfFile, dataSource="ensemblgenomes",format = "gff3")
+
+
+gff3Colnames =c("seqid", "source",
+                "type","start",
+                "end", "score",
+                "strand","phase",
+                "attributes")
+
+  annotation.df =    read_tsv(file = gtfFile, col_names = gff3Colnames,comment = "#") 
+
+
+ annotation.df %>% filter(type =="mRNA") %>%
+   group_by(seqid,start,end, strand) %>%
+   slice_head(n = 1) %>%
+   ungroup() %>%
+   separate_longer_delim(attributes, delim = ";") ->
+   test
+ 
+  test %>% select(seqid,start,end,strand,attributes) %>%
+   separate(attributes, into = c("key","value"), sep = "=") %>%
+   filter(key %in% c("Name","locus_tag","product")) %>%
+   pivot_wider(values_from = "value",names_from = "key") -> 
+   annotation.mRNA.df
+
+ annotation.mRNA.df %>% group_by(product) %>% summarise(n = n())
+ 
+annotation.mRNA.df %>% select(seqid,start,end, strand,Name,locus_tag,product) %>%
+  mutate(tx_id = 1:n()) -> 
+  annotation.mRNA.df
+
+mRNAs = makeGRangesFromDataFrame(annotation.mRNA.df,
+                                 seqnames.field = "seqid", 
+                                 start.field = "start", 
+                                 end.field = "end",
+                                 strand.field = "strand",
+                                 keep.extra.columns = TRUE)
+  
+
+```
+
+Run only once for getting relationship between protein ID (XP) and gene ID (XM)
+```{r, inlcude false  }
+
+gene2ProteinFile = here("annotation","gene2protein_relationship.csv")
+if(file.exists(gene2ProteinFile)){
+  relationship_df = read_csv(gene2ProteinFile)
+# Load the GFF file
+gff_df <- read_tsv(gtfFile, comment = "#", col_names = FALSE)
+
+
+filtered_gff <- gff_df %>%
+  filter(grepl("Parent=rna-XM_", X9) | grepl("ID=cds-XP_", X9))
+
+# Use mutate with regex replacements to extract and clean XM_ID and XP_ID
+relationship_df <- filtered_gff %>%
+  mutate(
+    XM_ID = sub(".*Parent=rna-(XM_[^;]+).*", "\\1", X9),
+    XP_ID = sub(".*ID=cds-(XP_[^;]+).*", "\\1", X9)
+  ) %>%
+  # Filter out rows where either XM_ID or XP_ID are missing or invalid
+  filter(grepl("XM_", XM_ID) & grepl("XP_", XP_ID)) %>%
+  # Select only the XM_ID and XP_ID columns and keep distinct pairs
+  select(XM_ID, XP_ID) %>%
+  distinct()
+
+write_csv(relationship_df,gene2ProteinFile)
+}else{
+  relationship_df = read_csv(gene2ProteinFile)
+}
+
+relationship_df %>% mutate(Name = XM_ID) -> relationship_df
+annotation.mRNA.df = inner_join(annotation.mRNA.df,relationship_df , by = "Name")
+```
+
+### Distance between RNA and TEs
+```{r}
+# Find the nearest TE for each mRNA
+# query = mRNAs, subject = TEs
+nearest_hits <- distanceToNearest(mRNAs, TEs, ignore.strand=TRUE)
+# Extract results into a readable format
+# This creates a data frame with mRNA index, TE index, and the distance
+results <- as.data.frame(nearest_hits)
+
+# Optional: Merge metadata to see which mRNA is near which TE
+results$locus_tag <- mRNAs$locus_tag[results$queryHits]
+results$TE_ID2   <- TEs$TE_ID2[results$subjectHits] # Replace 'name' with your TE column name
+
+results %>%
+  select(locus_tag, TE_ID2, distance) ->
+  GeneBody_TE_distance
+
+```
+
+
+
+
+
+## Initial data analysis
+```{r}
+if(!file.exists(methylationDataFile.QC)){
+
+methylationData.3 %>% group_by(Location,Tissue) %>%
+  mutate(Replicate2 = dense_rank(Replicate))->
+  methylationData.3
+
+
+
+methylationData.3 %>% group_by(Location,Replicate2,Replicate,Tissue) %>%
+  summarise(n = n(), mean = mean(depth), median = median(depth)) -> 
+  methylationData.3.summary
+
+methylationData.3.summary %>% 
+  mutate(Location = factor(Location, levels = c("west","northwest","north","northeast")))%>%
+  mutate(Tissue = factor(Tissue, levels = c("stipe","lamella","spore"))) %>%
+  mutate(IDsample = paste(Tissue,Location,Replicate2,sep = "_")) %>%
+  arrange(Location,Replicate2,Tissue) %>%
+  mutate(IDsample = factor(IDsample, levels = IDsample)) ->
+  methylationData.3.summary
+
+
+methylationData.3.summary %>%
+  ggplot(aes(x = IDsample, y = mean, fill = Tissue),color = "grey") +
+  geom_hline(yintercept = 10, linetype = "dashed") +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = colors) + 
+  theme_light() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1,vjust = 0.5)) +  
+  facet_grid(.~Location, space = "free", scales = "free_x") ->
+  methylationData.3.summary.plot
+
+methylationData.3.summary %>%
+  dplyr::select(Location, Replicate2,Tissue,mean) %>%
+  arrange(Replicate2,Tissue) %>%
+  ungroup() %>%
+  dplyr::select(-Replicate) %>%
+  pivot_wider(values_from = "mean", names_from = "Location")%>%
+  dplyr::rename(replicate = "Replicate2") ->
+  methylationData.3.summary.wide
+  
+
+my_table <- tableGrob(methylationData.3.summary.wide)
+
+# Wrap the table for patchwork
+table_plot <- wrap_elements(my_table)
+
+
+write_csv(methylationData.3.summary.wide,"~/MarasmiusMethylationRNA/data/methylationData.samples.summary.csv")
+methylationData.3.summary.plot/table_plot
+ggsave("~/MarasmiusMethylationRNA/suppFigures/methylationData.samples.summary.pdf",width = 10, height = 8, units = "in", dpi = 300)
+
+}
+```
+
+
+### QC intial
+Done only once!
+```{r}
+if(!file.exists(methylationDataFile.QC)){
+methylationData.3.summary %>%
+  ggplot(aes(x = IDsample, y = mean, fill = Tissue)) +
+  geom_bar(stat = "identity", color = "grey") +
+  geom_hline(yintercept = 10, linetype = "dashed", color = "red") +
+  scale_fill_manual(values = colors) + 
+  facet_grid(. ~ Location, space = "free", scales = "free_x") +
+  labs(
+    title = "Mean Methylation Levels per Sample",
+    x = "Sample ID",
+    y = "Average reads depth",
+    fill = "Tissue Type"
+  ) +
+  theme_light() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, vjust = 0.5),
+    plot.title = element_text(hjust = 0.5)
+  ) ->
+  methylationData.3.summary.plot
+
+methylationData.3.summary %>% filter(mean > 10) -> methylationData.3.summary.qc
+
+
+methylationData.3 %>% 
+  group_by(seqid,start) %>%
+  summarise(depth = mean(depth), percent = mean(percent)) %>%
+  ungroup() ->
+  methylationData.3.summary.sites
+
+methylationData.3 %>% inner_join(methylationData.3.summary.qc) ->
+  methylationData.3.QC
+
+
+
+methylationData.3.QC %>% 
+  ggplot(aes(x = depth)) + 
+  geom_density(fill = "steelblue", alpha = 0.6, adjust = 5) +  # smoother line
+  geom_vline(xintercept = 10, linetype = "dashed", color = "red") +  # threshold
+  annotate("text", x = 2, y = Inf, label = "Depth < 10 removed", 
+           vjust = 2, hjust = 0, color = "red", size = 3.5) +
+  scale_x_log10() +
+  coord_cartesian(xlim = c(1, 100)) +
+  labs(
+    title = "Distribution of Methylation Depth (log10)",
+    x = "Depth (log10 scale)",
+    y = "Density"
+  ) +
+  theme_minimal() ->QC.10filter.plot
+
+methylationData.3.QC %>% filter(depth > 10 ) -> methylationData.3.QC
+
+
+
+## Removing sites that are all 100% methylated or not methylated at all
+methylationData.3.QC %>% group_by(seqid,start) %>%
+  summarise(n = n(), percent = mean(percent)) -> 
+methylationData.3.QC.location
+
+
+methylationData.3.QC.location %>%
+  ggplot(aes(x = percent)) +
+  geom_density(fill = "steelblue", alpha = 0.6, adjust = 0.02) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
+  geom_vline(xintercept = 100, linetype = "dashed", color = "red") +
+  annotate("text", x = 0.02, y = Inf, label = "0% average methylation removed",
+           vjust = 2, hjust = 0, color = "red", size = 3.5) +
+  annotate("text", x = 100, y = Inf, label = "100% average methylation removed",
+           vjust = 2, hjust = 1, color = "red", size = 3.5) +
+  labs(
+    title = "Distribution of Mean Methylation Across Samples",
+    x = "Mean Methylation (0 to 100 percent)",
+    y = "Density"
+  ) +
+  theme_minimal() -> methylationData.3.QC.location.plot
+  
+
+methylationData.3.QC.location %>% filter( percent > 0 & percent < 100) %>%
+  select(seqid,start) %>% inner_join(methylationData.3.QC) ->
+  methylationData.3.QC
+
+
+methylationData.3.QC.location %>% filter( percent > 0 & percent < 100)->
+  methylationData.3.QC.location
+## Removing sites with depth less than 10 reads
+
+methylationData.3.QC.location %>%
+  ggplot(aes(x = n)) +
+  geom_histogram(fill = "steelblue", alpha = 0.6,binwidth = 1) +
+  geom_vline(xintercept = 10, linetype = "dashed", color = "red") +
+  annotate("text", x = 10, y = Inf, label = "sites found in less than 10 samples removed",
+           vjust = 2, hjust = 1, color = "red", size = 3.5) +
+  labs(
+    title = "Samples across sites",
+    x = "Number of samples with\n coverage at a site (n)",
+    y = "Number of sites"
+  ) +
+  theme_minimal() -> nrOfSamples.plot2
+
+methylationData.3.QC.location %>%ungroup() %>% distinct(n) 
+
+  methylationData.3.QC.location %>% filter(n > 10) ->
+    methylationData.3.QC.location
+    
+    
+  
+methylationData.3.QC.location%>%
+  select(seqid,start) %>%
+  inner_join(methylationData.3.QC) ->
+  methylationData.3.QC
+
+layout  <- "AB
+CC
+DD"
+
+methylationData.3.summary.plot + 
+  QC.10filter.plot +
+  methylationData.3.QC.location.plot+
+  nrOfSamples.plot2 + 
+  plot_layout(design = layout)+
+  plot_annotation(tag_levels = 'A')->
+  QC.plots
+ggsave("~/MarasmiusMethylationRNA//suppFigures/QC.methylation.pdf",
+       QC.plots, # your patchwork object
+      width = 21,
+      height = 24,
+  units = "cm"
+       )
+
+ggsave("~/MarasmiusMethylationRNA/suppFigures/QC.methylation.png",
+       dpi = 300,
+       QC.plots, # your patchwork object
+      width = 21,
+        
+      height = 24,
+  units = "cm"
+       )
+
+
+
+write_csv(methylationData.3.QC,methylationDataFile.QC)
+}else{
+  methylationData.3.QC = read_csv(methylationDataFile.QC)
+}
+
+methylationData.3.QC %>% 
+  mutate(location = gsub("mRNA","GeneBody",location )) %>%
+    mutate(location = gsub("intergenic","Intergenic",location ))->
+  methylationData.3.QC
+
+```
+
+
+
+
+### Remove  sites annotated as both
+
+```{r}
+methylationData.3.QC %>% filter(location != "Both") ->
+  methylationData.3.QC
+
+
+methylationData.3.QC %>% distinct(location)
+```
+
+# Figure2
+
+Change to Intergenic (Capital) (DONE)
+Change to fraction instead of percent (DONE)
+Change to Gene body instead of GeneBody (Not done make in ai)
+Make a statistical test for the differences in methyalation level.
+
+
+
+```{r}
+
+
+methylationData.3.QC %>% 
+  group_by(location,Tissue,Location,Replicate2) %>% 
+  summarise(n = n(), depth = mean(depth), methylation = mean(percent)) ->
+  methylationData.3.QC.annotation.distribution
+
+
+ 
+
+methylationData.3.QC.annotation.distribution %>%
+  filter(location != "Both") %>%
+  select(Tissue,Location,Replicate2,methylation,location) %>%
+  mutate(IDsample = paste(Location,Replicate2,Tissue,sep = "_")) %>%
+  mutate(fraction = methylation /100)%>%
+  ggplot(aes(x = Tissue, y = fraction, fill = Tissue)) + # Change x to Tissue
+  geom_boxplot(outliers = FALSE) +
+  geom_jitter(width = 0.2) + 
+#  geom_text(aes(label =IDsample ))+ # Add alpha for better visualization if many points
+  theme_light() +
+  scale_fill_manual(values = colors) +
+  facet_wrap(.~location, scales = "free_y") -> fig2C
+
+ggsave("~/MarasmiusMethylationRNA/figures/Figure2/fig2C.methylationData.samples.annotation.distribution.1.pdf",plot = fig2C,
+       width = 8, height = 5, units = "in", dpi = 300)
+
+
+
+methylationData.3.QC.annotation.distribution %>%
+  filter(location != "Both") %>%
+  select(Tissue,Location,Replicate2,methylation,location) %>%
+  mutate(IDsample = paste(Location,Replicate2,Tissue,sep = "_")) %>%
+  mutate(fraction = methylation /100)%>%
+  ggplot(aes(x = location, y = fraction, fill = location)) + # Change x to Tissue
+  geom_boxplot(outliers = FALSE) +
+  geom_jitter(width = 0.2) + 
+#  geom_text(aes(label =IDsample ))+ # Add alpha for better visualization if many points
+  theme_light() +
+  ylim(c(0,1))+
+  scale_fill_manual(values = colors)  -> fig2A
+
+ggsave("~/MarasmiusMethylationRNA/figures/Figure2/fig2A.methylationData.samples.annotation.distribution.1.pdf",plot = fig2A,
+       width = 4, height = 5, units = "in", dpi = 300)
+
+
+```
+
+
+```{r}
+
+methylationData.3.QC %>% 
+  group_by(Tissue,Location,Replicate) %>% 
+  summarise(n = n(), depth = mean(depth), methylation = mean(percent)) ->
+  methylationData.3.QC.distribution
+
+
+methylationData.3.QC.distribution %>% 
+  mutate(IDsample = paste(Tissue,Location,Replicate,sep = "_")) %>%
+  ggplot(aes(x = IDsample, y = depth, fill = Tissue),color = "grey") +
+  geom_hline(yintercept = 10, linetype = "dashed") +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = colors) + 
+  theme_light() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1,vjust = 0.5)) 
+  
+  
+
+methylationData.3.QC.annotation.distribution %>% 
+  dplyr::rename(annotation = "location") %>%
+  mutate(IDsample = paste(Tissue,Location,Replicate2,sep = "_")) %>%
+  ggplot(aes(x = IDsample, y = depth, fill = annotation),color = "grey") +
+  geom_bar(stat = "identity",position = "fill") +
+  scale_fill_manual(values = annotationColors) + 
+  theme_light() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1,vjust = 0.5)) ->
+  distribution.depth
+
+methylationData.3.QC.annotation.distribution %>% 
+  dplyr::rename(annotation = "location") %>%
+  mutate(IDsample = paste(Tissue,Location,Replicate2,sep = "_")) %>%
+  ggplot(aes(x = IDsample, y = methylation, fill = annotation),color = "grey") +
+  geom_bar(stat = "identity",position = "dodge") +
+  scale_fill_manual(values = annotationColors) + 
+  theme_light() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1,vjust = 0.5)) 
+
+
+
+
+methylationData.3.QC %>% group_by(Tissue,Location,Replicate) %>%
+  summarise(sum = sum(n())) %>% 
+  inner_join(methylationData.3.QC.annotation.distribution) %>%
+  mutate(fraction = n / sum) %>%
+  mutate(location = factor(location, levels = c("mRNA","Both","TE","intergenic"))) %>%
+  dplyr::rename(annotation = "location") %>%
+  ggplot(aes(x = Tissue, y = n, fill = annotation)) +geom_bar(stat = "identity", color = "black") +
+  facet_wrap("Location")+ 
+  scale_fill_manual(values = annotationColors) 
+#ggsave("../../results/meDNA/locationDistribution.pdf")
+
+ 
+
+  methylationData.3.QC.annotation.distribution %>% 
+    select(Tissue,Location,Replicate2,methylation,location) %>%
+      mutate(IDsample = paste(Location,Replicate2,Tissue,sep = "_")) %>%
+    pivot_wider(values_from = "methylation", names_from = "location" )  %>%
+    ggplot(aes(x = GeneBody, y = TE, color = Tissue)) + geom_point()+
+    theme_light()+
+    geom_text_repel(aes(label = IDsample), color = "black")  +
+    scale_color_manual(values = colors) -> sampleDistribution
+#ggsave("../../results/meDNA/sampleDistribution.pdf")
+  
+methylationData.3.QC.annotation.distribution %>% 
+  select(Tissue,Location,Replicate2,methylation,location) %>%
+  mutate(IDsample = paste(Location,Replicate2,Tissue,sep = "_")) %>%
+  filter(IDsample %in%
+           c("northeast_1_stipe","north_3_stipe","north_3_spore")) %>%
+    mutate(fraction = methylation /100) %>%
+    select(-methylation) %>%
+    pivot_wider(values_from = "fraction", names_from = "location" ) ->outliers  
+  
+
+  methylationData.3.QC.annotation.distribution %>% 
+    select(Tissue,Location,Replicate2,methylation,location) %>%
+      mutate(IDsample = paste(Location,Replicate2,Tissue,sep = "_")) %>%
+    mutate(fraction = methylation /100) %>%
+    select(-methylation) %>%
+    pivot_wider(values_from = "fraction", names_from = "location" )  %>%
+    ggplot(aes(x = GeneBody, y = TE, color = Tissue)) + geom_point()+
+    theme_light()+
+    geom_text_repel(data = outliers,aes(label = IDsample), color = "black")  +
+    scale_color_manual(values = colors) -> 
+    fig2B
+  
+  
+ggsave("~/MarasmiusMethylationRNA/figures/Figure2/Fig2B.TE.GeneBody.scatterPlot.pdf",plot = fig2B,
+       width = 6, height = 5, units = "in", dpi = 300)
+
+
+methylationData.3.QC %>%
+  mutate(methylated = depth*percent /100) %>%
+  mutate(notMethylated = depth - methylated) %>%
+  group_by(Sample) %>%
+  summarise(methylated = sum(methylated), notMethylated = sum(notMethylated)) %>%
+  mutate(fraction = methylated /(notMethylated+methylated))->
+  sum
+
+sum %>%
+  inner_join(samples.ring.methyl.df) %>%
+  ggplot(aes(x = Tissue, y = fraction,fill = Tissue,)) +
+  geom_boxplot(outliers = FALSE)+
+  geom_jitter(width = 0.1,mapping = aes(shape =Location)) + 
+  theme_light()+
+  scale_fill_manual(values = colors) ->
+  averageMethylation
+
+
+methylationData.3.QC.annotation.distribution %>% 
+    select(Tissue,Location,Replicate2,methylation,location) %>%
+      mutate(IDsample = paste(Location,Replicate2,Tissue,sep = "_")) %>%
+    mutate(fraction = methylation /100) %>%
+  group_by(location) %>%
+  summarise(
+    p_value = tryCatch({
+      kruskal.test(fraction ~ Tissue, data = cur_data())$p.value
+    }, error = function(e) NA),
+  )%>% 
+  mutate(comparison = "Location") %>%
+  mutate(adj_pvalue = p.adjust(p_value, method = "BH")) %>%
+  mutate(significant = "No") %>%
+  mutate(significant = replace(significant, adj_pvalue < (0.05), "Yes")) ->
+  kruskal_results.Methylation
+
+
+library(rstatix)
+library(purrr)
+
+results <- methylationData.3.QC.annotation.distribution %>% 
+  select(Tissue, Location, Replicate2, methylation, location) %>%
+  mutate(
+    IDsample = paste(Location, Replicate2, Tissue, sep = "_"),
+    fraction = methylation / 100
+  ) %>%
+  group_by(location) %>%
+  group_modify(~{
+    
+    df <- .x  # current location
+    
+    ## --- Kruskal–Wallis test ---
+    kw <- tryCatch(
+      kruskal.test(fraction ~ Tissue, data = df),
+      error = function(e) NULL
+    )
+    
+    kw_p <- if (!is.null(kw)) kw$p.value else NA
+    
+    ## --- Dunn test (pairwise comparisons) ---
+    dunn <- df %>%
+      dunn_test(fraction ~ Tissue, p.adjust.method = "BH") %>%
+      mutate(
+        kw_p_value = kw_p
+      )
+    
+    dunn
+  }) %>%
+  ungroup() %>%
+  
+  ## Adjust the Kw p-values across all locations
+  group_by(location) %>%
+  mutate(
+    kw_p_adj = p.adjust(unique(kw_p_value), method = "BH")
+  ) %>%
+  ungroup() %>%
+  
+  ## Add significance flags
+  mutate(
+    kw_significant = kw_p_adj < 0.05,
+    pairwise_significant = p.adj < 0.05
+  )
+
+write_csv(results, "~/MarasmiusMethylationRNA/figures/Figure2/fig2C.methylationData.samples.annotation.distribution.kruskal.dunn.test.results.csv")
+
+```
+
+
+
+
+```{r}
+
+
+methylationData.3.QC %>% 
+  group_by(Tissue, location) %>%
+  summarise(mean = mean(percent))
+  
+methylationData.3.QC %>% 
+  ggplot(aes(x = percent,color = Tissue )) +
+  geom_density()+
+  geom_vline(xintercept = 90, linetype = "dashed", color = "red")+
+  geom_vline(xintercept = 10, linetype = "dashed", color = "blue")+
+  scale_color_manual(values = colors)  +
+  theme_minimal() +
+  labs(
+    fill = "Methylation Level", 
+    x = "Precent methylated per site", 
+    y = "Density"
+  )->methylation.density.plot
+  
+
+
+
+methylationData.3.QC %>% 
+  mutate(methylationLevel = "High") %>%
+  mutate(methylationLevel = replace(methylationLevel,
+                                    percent <90,
+                                    "Average" )) %>%
+  mutate(methylationLevel = replace(methylationLevel,
+                                    percent <10,
+                                    "Low" )) ->
+  methylationData.3.QC
+
+
+
+
+
+
+methylationData.3.QC %>% 
+  group_by(Location,location, Tissue,methylationLevel) %>%
+  summarise(n = n()) -> methylationData.3.QC.summary
+
+methylationData.3.QC.summary %>%
+  group_by(Location,location, Tissue) %>%
+  summarise(Total = sum(n)) %>% 
+  inner_join(methylationData.3.QC.summary) %>%
+  mutate(fraction = n /Total) -> methylationData.3.QC.summary
+
+methylationData.3.QC <- methylationData.3.QC %>%
+  mutate(methylationLevel = factor(methylationLevel, levels = c("High", "Average", "Low")))
+
+
+ggplot(methylationData.3.QC, aes(x = Tissue, fill = methylationLevel)) +
+  geom_bar(position = "fill") +
+  facet_wrap(facets = vars(location)) + # Ensure 'location' is used properly
+  scale_fill_manual(values = c("Low" = "blue", "Average" = "grey", "High" = "red")) +
+  theme_minimal() +
+  labs(
+    fill = "Methylation Level", 
+    x = "Tissue", 
+    y = "Count"
+  )-> methylationDistribution
+ggsave("../../results/meDNA/MethylationDistribution.pdf")
+
+
+layout= c("AB
+          CC
+          CC")
+#methylation.density.plot+ methylationDistribution+
+#    sampleDistribution + plot_layout(design = layout, guides = "collect") +
+#  plot_annotation(tag_levels = 'A')-> figure2
+#ggsave("~/MarasmiusMethylationRNA/suppFigures/Figure2.methylation.pdf",width = 10, height = 8, units = "in", dpi = 300,plot = figure2)
+
+#ggsave("~/MarasmiusMethylationRNA/figures/Figure2.methylation.annotation.png",
+#       plot = figure2, width = 180,
+#       height = 180, units = "mm", 
+#       dpi = 300,plot = figure2)
+
+
+
+
+
+
+
+
+```
+#Figure 3
+
+Add an pvalue line to the distribution
+Add a heatmap with only the significant ones
+
+Check that the mRNA and TE analysis are similar in terms of significant sites
+
+###  TE analysis
+
+```{r }
+TEdf %>% 
+  mutate(motifStart = as.numeric(motifStart)) %>%
+  mutate(motifStop = as.numeric(motifStop)) %>%
+  separate(TEclass, into=c("TEclass","nr"), sep = "-") ->
+  TEdf
+TEdf %>%
+  group_by(TEclass) %>%
+  summarise(motifStart = min(motifStart), motifStop = max(motifStop)) %>%
+  arrange(-motifStop)  %>%
+  filter(motifStop>500) %>%
+  select(TEclass) %>%
+  inner_join(TEdf)->
+  TEdf.long
+
+TEdf.long %>% select(TEclass,seqid,TE_ID2) -> 
+  TE.info
+
+TE.info 
+  
+
+
+methylationData.3.QC %>% 
+  select(-TEclass) %>%
+  filter(location == "TE") %>%
+  inner_join(TE.info) ->
+  methylationData.3.QC.TE
+```
+
+
+####PCA analysis
+
+```{r }
+methylationData.3.QC.TE %>%
+  group_by(TE_ID2,Location,Replicate2,Tissue) %>%
+  summarise( percent = mean(percent)) ->
+  methylationData.3.QC.TE.summary
+
+
+methylationData.3.QC.TE.summary %>%
+  group_by(TE_ID2,Tissue) %>%
+  summarise(nrOfExamples = n()) -> methylationData.3.QC.TE.summary.2
+
+methylationData.3.QC.TE.summary.2 %>%
+  group_by(Tissue) %>%
+  summarise(n = max(nrOfExamples)) %>%
+  inner_join(methylationData.3.QC.TE.summary.2) %>%
+  group_by(TE_ID2) %>%
+  summarise(n = n()) %>%
+  filter(n == 3)  %>%
+  select(TE_ID2)->
+  TE.covered
+
+
+TE.covered
+  
+
+methylationData.3.QC.TE.summary %>%
+  inner_join(TE.covered) %>%
+  pivot_wider(values_from = "percent",names_from = c("Location","Replicate2","Tissue")) %>%
+  column_to_rownames(var = "TE_ID2")%>%
+  drop_na()->                     # Removes any row with at least one NA->
+  methylationData.3.QC.TE.wide
+
+
+## PCA analysis
+PCAresult = PCAtools::pca(methylationData.3.QC.TE.wide,center = TRUE)
+rot = PCAresult$rotated[,1:6]
+
+## Cluster analysis
+dist_matrix <- dist(rot, method = "euclidean")
+hc <- hclust(dist_matrix, method = "ward.D2")
+library(NbClust)
+nb <- NbClust(rot, distance="euclidean", min.nc=2, max.nc=10, method="ward.D2")
+nb$Best.nc
+
+
+wss <- numeric(10)
+for (k in 2:10) {
+  clusters <- cutree(hc, k)
+  wss[k] <- sum(sapply(unique(clusters), function(c) {
+    pts <- rot[clusters == c, ]
+    sum(scale(pts, scale=FALSE)^2)
+  }))
+}
+
+plot(1:10, wss, type="b", xlab="k", ylab="Within-cluster SS")
+
+
+## Variance
+PCA.stats = data.frame(variance = PCAresult$variance, 
+                       PC = factor(names(PCAresult$variance), levels = names(PCAresult$variance)))
+ggplot(PCA.stats, aes(x = PC, y = variance) )+
+  geom_bar(stat = "identity", fill = "skyblue", color = "black") +
+  theme_minimal() +
+  labs(
+    title = "PC variance",
+    x = "PC",
+    y = "Variance"
+  )+theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 10),  # Rotate and adjust x-axis labels
+    axis.title.x = element_text(size = 12, face = "bold"),  # Format x-axis title
+    axis.title.y = element_text(size = 12, face = "bold")   # Format y-axis title
+  ) -> variation
+
+
+ggsave("~/MarasmiusMethylationRNA/figures/figure3/TE.PCA.variance.plot.pdf",
+       plot = variation, width = 10, height = 8, units = "in")
+
+
+methylationData.3.QC.TE %>%
+  group_by(Location,Replicate2,Tissue) %>%
+  summarise(n = n(),mean = mean(mean)) %>%
+  mutate(sampleID = paste(Location,Replicate2,Tissue, sep = "_")) ->
+  sampleInfo.TE.summary
+
+sampleInfo.TE.summary
+
+PCAresult$rotated  %>%
+  rownames_to_column(var = "sampleID") %>%
+  inner_join(sampleInfo.TE.summary) %>%
+  ggplot(aes(x = PC1, y = PC2, color =Tissue, shape = Location )) +
+  geom_point(size = 3, alpha = 0.7) + # Adjust point size
+  scale_shape_manual(values = c(16, 17, 15, 18)) + # Custom shapes
+  theme_minimal() +
+  scale_color_manual(values = colors) +
+  labs(
+    title = "Scatter Plot with Four Classes",
+    x = "PC1 (29 % variance)",
+    y = "PC2 (8.6 % variance )",
+    shape = "Class"
+  )-> PCA.plot
+
+
+  
+PCAresult$rotated  %>%
+  rownames_to_column(var = "sampleID") %>%
+  inner_join(sampleInfo.TE.summary)  %>%
+  ggplot(aes(x = PC1, y = PC2, color =Tissue, shape = Location,label =sampleID )) +
+  geom_point(size = 3, alpha = 0.7) + # Adjust point size
+  scale_shape_manual(values = c(16, 17, 15, 18)) + # Custom shapes
+  theme_minimal() +
+  scale_color_manual(values = colors) +
+  labs(
+    title = "Scatter Plot with Four Classes",
+    x = "PC1 (29 % variance)",
+    y = "PC2 (8.6 % variance )",
+    shape = "Class"
+  ) + geom_text_repel() -> PCA.plot.labels
+
+
+
+PCA.plot.labels
+
+
+breaks1 <- seq(from = -100, to = 300, length.out = 4)
+library(RColorBrewer)
+colors1 = colorRampPalette(rev(brewer.pal(n = 7, name =
+  "RdYlBu")))(4)
+myColor2 <-circlize::colorRamp2(breaks = breaks1,colors =colors1)
+
+
+library(ComplexHeatmap)
+
+pdf("~/MarasmiusMethylationRNA/figures/Figure3/TE.methylation.PCA.heatmap.pdf",
+    width = 8, height = 6)
+ComplexHeatmap::Heatmap(
+  PCAresult$rotated[1:3] ,
+  col = myColor2,
+  column_split = 6,
+  split = clusters,
+  cell_fun = function(j, i, x, y, width, height, fill) {
+    grid.rect(
+      x, y, width = width, height = height,
+      gp = gpar(col = "darkgrey", fill = NA, lwd = 1) # Add gray borders
+    )
+  }
+) 
+dev.off()
+
+
+png("~/MarasmiusMethylationRNA/figures/Figure3/TE.methylation.PCA.heatmap.png",
+    width = 1800, height = 1200)
+ComplexHeatmap::Heatmap(
+  PCAresult$rotated[1:3] ,
+  col = myColor2,
+  column_split = 6,
+  split = clusters,
+  cell_fun = function(j, i, x, y, width, height, fill) {
+    grid.rect(
+      x, y, width = width, height = height,
+      gp = gpar(col = "darkgrey", fill = NA, lwd = 1) # Add gray borders
+    )
+  }
+) 
+dev.off()
+
+
+# Determine the optimal number of clusters
+# Plot the dendrogram
+plot(hc, main = "Hierarchical Clustering Dendrogram", sub = "", xlab = "", ylab = "Height", hang = -1, cex = 0.6)
+
+# Cut the dendrogram into 3 clusters
+clusters <- cutree(hc, k = 2)
+
+# Add cluster assignments to the data frame
+rot$cluster <- as.factor(clusters)
+
+
+
+
+
+ rot = rot %>% rownames_to_column("IDsample") 
+ methylationData.3.QC.annotation.distribution %>% 
+    select(Tissue,Location,Replicate2,methylation,location) %>%
+      mutate(IDsample = paste(Location,Replicate2,Tissue,sep = "_")) %>%
+    inner_join(rot) %>%
+    pivot_wider(values_from = "methylation", names_from = "location" )  %>%
+    ggplot(aes(x = GeneBody, y = TE, shape = Tissue,color = cluster)) + geom_point()+
+    theme_light()+
+    geom_text_repel(aes(label = IDsample), color = "black") -> fig3B.clustered
+     
+
+ PCAresult$rotated  %>%
+  rownames_to_column(var = "sampleID") %>%
+  inner_join(sampleInfo.TE.summary)  %>%
+  inner_join(rot) %>%
+  ggplot(aes(x = PC1, y = PC2, color =cluster, shape = Tissue,label =sampleID )) +
+  geom_point(size = 3, alpha = 0.7) + # Adjust point size
+  scale_shape_manual(values = c(16, 17, 15, 18)) + # Custom shapes
+  theme_minimal() +
+  labs(
+    title = "Scatter Plot with Four Classes",
+    x = "PC1 (29 % variance)",
+    y = "PC2 (8.6 % variance )",
+    shape = "Class"
+  ) +geom_text_repel(aes(label = sampleID), color = "black")  -> 
+  
+  PCA.plot.clustered
+ PCA.plot.clustered
+```
+
+
+####  Non-Parametric Test (Kruskal-Wallis)
+
+
+
+```{r }
+#methylationData.3.QC.TE %>%
+  #ggplot(aes(x = Tissue, fill = methylationLevel ))+ geom_bar(position = "fill") +  # Replace with your desired geom
+#  theme(axis.text.x = element_text(angle = 70, hjust = 1)) + facet_wrap("TEclass")
+
+
+
+methylationData.3.QC.TE %>%
+  group_by(TE_ID2) %>%
+  summarise(
+    p_value = tryCatch({
+      kruskal.test(percent ~ Location, data = cur_data())$p.value
+    }, error = function(e) NA),
+  ) %>%
+  mutate(comparison = "Location") %>%
+  mutate(adj_pvalue = p.adjust(p_value, method = "BH")) %>%
+  inner_join(TE.info) %>%
+  mutate(significant = "No") %>%
+  mutate(significant = replace(significant, adj_pvalue < (0.001), "Yes")) ->
+  kruskal_results.TE.location
+
+kruskal_results.TE.location %>% group_by(significant)  %>% summarise(n = n())
+
+methylationData.3.QC.TE %>%
+  group_by(TE_ID2) %>%
+  summarise(
+    p_value = tryCatch({
+      kruskal.test(percent ~ Replicate, data = cur_data())$p.value
+    }, error = function(e) NA),
+  ) %>%
+  mutate(comparison = "Replicate") %>%
+  mutate(adj_pvalue = p.adjust(p_value, method = "BH")) %>%
+  inner_join(TE.info) %>%
+  mutate(significant = "No") %>%
+  mutate(significant = replace(significant, adj_pvalue < (0.0001), "Yes")) ->
+  kruskal_results.TE.replicate
+
+
+kruskal_results.TE.replicate %>% group_by(significant)  %>% summarise(n = n())
+
+methylationData.3.QC.TE %>%
+  group_by(TE_ID2) %>%
+  summarise(
+    p_value = tryCatch({
+      kruskal.test(percent ~ Tissue, data = cur_data())$p.value
+    }, error = function(e) NA),n = n()
+  ) %>%
+  mutate(comparison = "Tissue") %>%
+  mutate(adj_pvalue = p.adjust(p_value, method = "BH")) %>%
+  inner_join(TE.info) %>%
+  mutate(significant = "No") %>%
+  mutate(significant = replace(significant, adj_pvalue < (0.0001), "Yes")) ->
+  kruskal_results.TE
+
+
+
+bind_rows(kruskal_results.TE,kruskal_results.TE.replicate,kruskal_results.TE.location)   %>%
+  ggplot(aes(x = p_value, color = comparison)) +
+  geom_density( adjust = 1/1) +
+  labs(
+    title = "Density plot",
+    x = "p-value",
+    y = "Density",
+    shape = "Class"
+  ) + theme_light() ->
+  TE.pvalue.density.plot
+ggsave("~/MarasmiusMethylationRNA/figures/Figure3/3A.kruskal.distribution.plot.pdf",plot = TE.pvalue.density.plot,width = 180, height = 180, units = "mm", dpi = 300)
+
+
+
+# Filter significant results
+kruskal_results.TE %>%
+  filter(!is.na(p_value) & adj_pvalue < (0.001))  %>%
+  arrange(adj_pvalue)->
+  kruskal_results.TE.significant
+
+bind_rows(kruskal_results.TE,kruskal_results.TE.replicate,kruskal_results.TE.location) %>%
+  filter(!is.na(p_value) & adj_pvalue < (0.0001))  %>%
+  group_by(comparison) %>% summarise(n = n()) 
+
+
+TEclass_counts <- kruskal_results.TE %>%
+  group_by(TEclass, significant) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  pivot_wider(names_from = significant, values_from = count, values_fill = 0) %>%
+  rename(No = "No", Yes = "Yes")
+
+
+
+
+TEclass_stats <- TEclass_counts %>%
+  rowwise() %>%
+  mutate(
+    p_value = fisher.test(matrix(c(No, Yes, 839 , 5968), nrow = 2))$p.value
+  ) %>%
+  ungroup() %>%
+  mutate(ratio = Yes/No) %>%
+  arrange(-ratio) %>%
+  mutate(average =839/5968 ) %>%
+  mutate(median = median(ratio))
+
+
+methylationData.3.QC.TE %>%
+  distinct(TE_ID2)
+
+methylationData.3.QC.TE %>% filter(TE_ID2 == "8097") %>%
+  ggplot(aes(x = start, y = percent, color = Tissue)) +
+  geom_point( size = 0.5, alpha = 0.1) + geom_smooth(se = FALSE) +
+  scale_color_manual(values = colors) + ylim( c(75,100)) +
+  labs(
+    title = "Methylation across TE8097 (Plavaka)",
+    x = "Position in TE8097",
+    y = "Percent methylated"
+  ) 
+
+kruskal_results.TE.significant %>% slice_head(n = 5)  -> 
+  top5.te
+methylationData.3.QC.TE %>% 
+  filter(TE_ID2 %in%  top5.te$TE_ID2) %>%
+  ggplot(aes(x = start, y = percent, color = Tissue)) +
+  geom_point( size = 0.5, alpha = 0.4) + geom_smooth(se = FALSE) +
+  scale_color_manual(values = colors) + ylim( c(85,100)) +
+  labs(
+    title = "Methylation across different TEs (top 5 significant)",
+    x = "Position in TE8097",
+    y = "Percent methylated"
+  ) + facet_wrap("TE_ID2",nrow = 1, scales = "free_x")   +
+  theme_light() -> examples.methylation
+  
+
+methylationData.3.QC.TE %>% 
+  filter(TE_ID2 %in%  top5.te$TE_ID2) %>%
+  ggplot(aes(x = start, y = depth, color = Tissue)) +
+  geom_point( size = 0.5, alpha = 0.4) + geom_smooth(se = FALSE) +
+  scale_color_manual(values = colors) + ylim( c(0,40))  +
+  labs(
+    title = "Depth across different TEs (top 5 significant)",
+    x = "Position in TE",
+    y = "Depth"
+  ) + facet_wrap(c("TE_ID2","TEclass"),nrow = 1, scales = "free_x")   +
+  theme_light()  -> examples.depth
+
+
+methylationData.3.QC.TE %>% 
+  filter(TE_ID2 == "8097") %>%
+  ggplot(aes(x = start, y = percent, color = Tissue)) +
+  geom_point( size = 0.5, alpha = 0.4) + geom_smooth(se = FALSE) +
+  scale_color_manual(values = colors) + ylim( c(80,100))  +
+  labs(
+    title = "Depth across different Samples",
+    x = "Position in TE",
+    y = "Depth"
+  ) + facet_wrap(c("Sample"),nrow = 1, scales = "free_x")   +
+  theme_light() 
+
+methylationData.3.QC.TE %>% 
+  filter(TE_ID2 == "8097") %>%
+  ggplot(aes(x = start, y = percent, color = Tissue)) +
+  geom_point( size = 0.5, alpha = 0.4) + geom_smooth(se = FALSE) +
+  scale_color_manual(values = colors) + ylim( c(80,100))  +
+  labs(
+    title = "Depth across different Samples",
+    x = "Position in TE",
+    y = "Depth"
+  )  +
+  theme_light() 
+
+
+
+
+
+
+
+
+
+```
+
+
+#### Linear mixed model
+```{r}
+methylationData.3.QC.TE %>%
+  group_by(TE_ID2) %>%
+  summarise(
+    p_value = tryCatch({
+      kruskal.test(percent ~ Tissue, data = cur_data())$p.value
+    }, error = function(e) NA),n = n()
+  ) %>%
+  mutate(comparison = "Tissue") %>%
+  mutate(adj_pvalue = p.adjust(p_value, method = "BH")) %>%
+  inner_join(TE.info) %>%
+  mutate(significant = "No") %>%
+  mutate(significant = replace(significant, adj_pvalue < (0.0001), "Yes")) ->
+  kruskal_results.TE
+
+methylationData.3.QC.TE %>% distinct(TE_ID2) ->
+  TE.unique
+
+methylationData.3.QC.TE %>%
+  select(TE_ID2,Sample,Tissue,start,percent) %>%
+  ungroup() %>%
+  group_by(TE_ID2,Tissue,start) %>%
+    summarise(n = n(), methylation = mean(percent)) ->
+  TE.summary.all
+  
+TE.summary.all %>%
+  group_by(TE_ID2,Tissue) %>%
+  summarise(n = n()) %>%
+  ungroup %>%
+  filter(n >=10) %>%
+  group_by(TE_ID2) %>%
+  summarise(n = n()) %>%
+  filter(n >=2) ->
+  TE.filtered
+
+TE.summary.all %>% filter(TE_ID2 %in% TE.filtered$TE_ID2) %>%
+  ungroup() %>%
+  distinct(TE_ID2,start) %>%
+  group_by(TE_ID2) %>%
+  summarise(n = n()) %>%
+  filter(n > 10) ->
+  TE.filtered.nCpG.nObs
+  
+
+
+
+```
+
+
+
+```{r}
+
+library(lme4)
+#install.packages("lmerTest")
+library(lmerTest)   # adds p-values
+
+
+dist.list.Tissue = list()
+for(TE in TE.filtered.nCpG.nObs$TE_ID2){
+  TEinfo = list()
+    methylationData.3.QC.TE %>%
+      filter(TE_ID2 == TE) %>%
+      select(Sample,Tissue,start,percent) ->
+      mat
+     model <- lmer(percent ~ Tissue + (1 | start), data = mat)
+       pval  <- anova(model)$`Pr(>F)`[1]
+     TEinfo[["Name"]] = TE
+     TEinfo[["data"]] = mat
+     TEinfo[["mixedLinearModel"]] = model
+     TEinfo[["pvalue"]] = pval
+     
+     dist.list.Tissue[[TE]] = TEinfo
+       
+}
+
+dist.list.Location = list()
+for(TE in TE.filtered.nCpG.nObs$TE_ID2){
+  TEinfo = list()
+    methylationData.3.QC.TE %>%
+      filter(TE_ID2 == TE) %>%
+      select(Sample,Location,start,percent) ->
+      mat
+     model <- lmer(percent ~ Location + (1 | start), data = mat)
+       pval  <- anova(model)$`Pr(>F)`[1]
+     TEinfo[["Name"]] = TE
+     TEinfo[["data"]] = mat
+     TEinfo[["mixedLinearModel"]] = model
+     TEinfo[["pvalue"]] = pval
+     
+     dist.list.Location[[TE]] = TEinfo
+       
+}
+
+dist.list.Rep = list()
+for(TE in TE.filtered.nCpG.nObs$TE_ID2){
+  TEinfo = list()
+    methylationData.3.QC.TE %>%
+      filter(TE_ID2 == TE) %>%
+      select(Sample,Replicate2,start,percent) ->
+      mat
+     model <- lmer(percent ~ Replicate2 + (1 | start), data = mat)
+       pval  <- anova(model)$`Pr(>F)`[1]
+     TEinfo[["Name"]] = TE
+     TEinfo[["data"]] = mat
+     TEinfo[["mixedLinearModel"]] = model
+     TEinfo[["pvalue"]] = pval
+     
+     dist.list.Rep[[TE]] = TEinfo
+       
+}
+
+
+TEspvalues.Tissue = list()
+for(TE in TE.filtered.nCpG.nObs$TE_ID2){
+  data.frame(
+  pvalue = dist.list.Tissue[[TE]][["pvalue"]],
+  TE_ID2 = dist.list.Tissue[[TE]][["Name"]],
+  Test = "Tissue"
+  ) ->
+  TEspvalues.Tissue[[as.character(TE)]]
+}
+
+TEspvalues.Location = list()
+for(TE in TE.filtered.nCpG.nObs$TE_ID2){
+  data.frame(
+  pvalue = dist.list.Location[[TE]][["pvalue"]],
+  TE_ID2 = dist.list.Location[[TE]][["Name"]],
+  Test = "Location"
+  ) ->
+  TEspvalues.Location[[as.character(TE)]]
+}
+
+TEspvalues.Rep = list()
+for(TE in TE.filtered.nCpG.nObs$TE_ID2){
+  data.frame(
+  pvalue = dist.list.Rep[[TE]][["pvalue"]],
+  TE_ID2 = dist.list.Rep[[TE]][["Name"]],
+  Test = "Rep"
+  ) ->
+  TEspvalues.Rep[[as.character(TE)]]
+}
+
+
+
+bind_rows(TEspvalues.Tissue) %>%
+  mutate(adj_pvalue = p.adjust(pvalue, method = "BH")) %>%
+  mutate(significant = "No") %>%
+  mutate(significant = replace(significant, adj_pvalue < (0.0001), "Yes")) ->
+  lmm_results.TE.Tissue
+
+
+bind_rows(TEspvalues.Location) %>%
+  mutate(adj_pvalue = p.adjust(pvalue, method = "BH")) %>%
+  mutate(significant = "No") %>%
+  mutate(significant = replace(significant, adj_pvalue < (0.0001), "Yes")) ->
+  lmm_results.TE.Location
+
+bind_rows(TEspvalues.Rep) %>%
+  mutate(adj_pvalue = p.adjust(pvalue, method = "BH")) %>%
+  mutate(significant = "No") %>%
+  mutate(significant = replace(significant, adj_pvalue < (0.0001), "Yes")) ->
+  lmm_results.TE.Rep
+
+lmm_results.TE = bind_rows(lmm_results.TE.Tissue,lmm_results.TE.Location,lmm_results.TE.Rep )
+
+
+lmm_results.TE %>% ggplot(aes(x = pvalue, color = Test)) +
+  geom_density( adjust = 1/10) +
+  labs(
+    title = "Density plot",
+    x = "p-value",
+    y = "Density",
+    shape = "Class"
+  ) + theme_light() ->
+  TE.pvalue.density.plot
+ggsave("~/MarasmiusMethylationRNA/figures/Figure3/3A.kruskal.distribution.plot.pdf",plot = TE.pvalue.density.plot,width = 180, height = 180, units = "mm", dpi = 300)
+
+
+lmm_results.TE %>% arrange(adj_pvalue) %>%
+  filter(significant == "Yes") ->
+  lmm_results.TE.significant
+lmm_results.TE.significant %>% 
+  group_by(Test) %>%
+  summarise(numberOfSignificant = n()) ->
+  lmm_results.TE.significant.summary
+
+```
+
+###  Aalysis of  significant TEs  
+```{r }    
+lmm_results.TE.Tissue %>% filter(significant == "Yes") %>%
+  arrange(adj_pvalue) ->
+  lmm_results.TE.Tissue.significant
+
+TE_tissue_DE = intersect(lmm_results.TE.Tissue.significant$TE_ID2,as.numeric( rownames(methylationData.3.QC.TE.wide))) 
+
+methylationData.3.QC.TE.wide[as.character(TE_tissue_DE),]->
+
+methylationData.3.QC.TE.sig.wide 
+
+
+
+
+
+```
+#### Cluster of TEs
+##### Hierarchical clustering with correct number of clusters
+```{r}
+
+
+## Cluster analysis
+dist_matrix <- dist(methylationData.3.QC.TE.sig.wide, method = "euclidean")
+hc <- hclust(dist_matrix, method = "ward.D2")
+library(NbClust)
+nb <- NbClust(methylationData.3.QC.TE.sig.wide, distance="euclidean", min.nc=2, max.nc=10, method="ward.D2")
+
+
+wss <- numeric(10)
+for (k in 2:10) {
+  clusters <- cutree(hc, k)
+  wss[k] <- sum(sapply(unique(clusters), function(c) {
+    pts <- methylationData.3.QC.TE.sig.wide[clusters == c, ]
+    sum(scale(pts, scale=FALSE)^2)
+  }))
+}
+
+plot(1:10, wss, type="b", xlab="k", ylab="Within-cluster SS")
+
+
+
+
+nrOfClusters = nb$Best.nc[[1]]
+
+nrOfClusters = 3
+clusters <- cutree(hc, nrOfClusters)
+
+
+clusters %>%  as.data.frame() %>%
+  rownames_to_column(var = "TE_ID2") %>%
+  rename(cluster = ".") ->
+  clusters
+
+
+
+
+```
+
+
+#####  Visualisation of 3 clusters
+
+```{r}
+
+
+clusters %>%
+  mutate(TE_ID2 = as.double(TE_ID2)) %>%
+  inner_join(methylationData.3.QC.TE) %>%
+  group_by(cluster, Tissue) %>%
+  summarise(mean = mean(percent), sd = sd(percent))->
+  clusters.Tissue.summary
+
+
+clusters.Tissue.summary %>% group_by(cluster) %>%
+  summarise(overallMean = mean(mean)) %>%
+  arrange(overallMean) %>%
+  mutate(clusterOrder = as.factor(row_number()))->
+  cluster.order
+  
+
+
+
+clusters %>%  
+  mutate(TE_ID2 = as.double(TE_ID2)) %>%
+  inner_join(methylationData.3.QC.TE) %>%
+  ungroup() %>%
+  distinct(TE_ID2,cluster,TEclass) %>%
+  group_by(cluster,TEclass) %>%
+  summarise(nrOfTEs = n()) %>%
+  arrange(cluster, -nrOfTEs)%>%
+  group_by(cluster) %>%
+  slice_head(n = 5)->
+  clusters.count.summary
+
+
+clusters.Tissue.summary %>%
+  mutate(clusterName = "Low Methylation") %>%
+  mutate(clusterName = replace(clusterName, 
+                               grepl(1, cluster),
+                               "Medium Methylation")) %>% 
+  
+  mutate(clusterName = replace(clusterName, 
+                               grepl(3, cluster),
+                               "High Methylation")) %>%
+  mutate(clusterName = factor(clusterName, 
+                              levels = c("Low Methylation",
+                                         "Medium Methylation",
+                                         "High Methylation"))) %>%
+  inner_join(clusters.count.summary)->
+clusters.summary
+
+clusters.Tissue.summary %>%
+  inner_join(clusters.count.summary) %>%
+  inner_join(cluster.order)->
+clusters.summary
+  
+
+
+clusters %>%
+  mutate(TE_ID2 = as.double(TE_ID2)) %>%
+  inner_join(methylationData.3.QC.TE) %>%
+  group_by(TE_ID2,Tissue,Sample,cluster ) %>%
+  summarise(percent = mean(percent) )%>%
+  inner_join(clusters.summary) %>%
+  ggplot(aes(x = clusterOrder, y = percent, fill = Tissue)) +
+  geom_boxplot() +
+  theme_light() +
+  labs(
+    title = "Methylation levels per TE cluster",
+    x = "TE Cluster",
+    y = "Percent Methylation"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 10),  # Rotate and adjust x-axis labels
+    axis.title.x = element_text(size = 12, face = "bold"),  # Format x-axis title
+    axis.title.y = element_text(size = 12, face = "bold")   # Format y-axis title
+  )+
+  scale_fill_manual(values = colors) -> distributionPerClusterPlot
+   
+     
+
+ha = HeatmapAnnotation(
+    cluster = as.factor(clusters$cluster)
+)
+
+distributionPerClusterPlot
+
+pdf("~/MarasmiusMethylationRNA/figures/Figure3/TE.methylation.clustered.heatmap.pdf",
+    width = 8, height = 6)
+ComplexHeatmap::Heatmap(t(methylationData.3.QC.TE.wide[as.character(TE_tissue_DE),]),
+                        show_column_names = FALSE,
+                        show_column_dend = TRUE, 
+                        cluster_columns = hc,
+                        column_split = nrOfClusters,
+                        top_annotation = ha,
+                        cluster_rows =TRUE,  split = 2
+) 
+
+dev.off()
+distributionPerClusterPlot
+
+
+clusters %>%   
+  mutate(TE_ID2 = as.double(TE_ID2)) %>%
+  inner_join(methylationData.3.QC.TE) %>%
+  distinct(TE_ID2,cluster,TEclass) %>%
+  group_by(cluster,TEclass) %>%
+  summarise(nrOfTEs = n())  %>%
+  inner_join(cluster.order) %>%
+  filter(TEclass %in% clusters.count.summary$TEclass) %>%
+  ggplot(aes(x = clusterOrder, y = nrOfTEs, fill = TEclass)) +
+  geom_bar(stat = "identity", position = "fill") +
+  theme_light() +
+  labs(
+    title = "TE class distribution per TE cluster",
+    x = "TE Cluster",
+    y = "Number of TEs"
+  ) -> distribution
+
+
+cluster.order
+
+clusters%>%   
+  inner_join(clusters.count.summary) %>%   
+  mutate(TE_ID2 = as.double(TE_ID2)) %>%
+  inner_join(methylationData.3.QC.TE) %>%
+  distinct(TE_ID2,cluster,TEclass) %>%
+  group_by(cluster,TEclass) %>%
+  summarise(nrOfTEs = n())  %>%
+  inner_join(cluster.order) %>%
+  ggplot(aes(x = clusterOrder, y = nrOfTEs)) +
+  geom_bar(stat = "identity") +
+  theme_light() +
+  labs(
+    title = "TE class distribution per TE cluster",
+    x = "TE Cluster",
+    y = "Number of TEs"
+  ) -> distribution2
+
+
+
+distributionPerClusterPlot/distribution2/distribution
+
+
+
+
+```
+
+
+
+
+
+###  mRNA analysis
+
+```{r }
+TEdf %>% 
+  mutate(motifStart = as.numeric(motifStart)) %>%
+  mutate(motifStop = as.numeric(motifStop)) %>%
+  separate(TEclass, into=c("TEclass","nr"), sep = "-") ->
+  TEdf
+TEdf %>%
+  group_by(TEclass) %>%
+  summarise(motifStart = min(motifStart), motifStop = max(motifStop)) %>%
+  arrange(-motifStop)  %>%
+  filter(motifStop>500) %>%
+  select(TEclass) %>%
+  inner_join(TEdf)->
+  TEdf.long
+
+TEdf.long %>% select(TEclass,seqid,TE_ID2) -> 
+  TE.info
+
+TE.info 
+  
+
+annotation.mRNA.df %>% select(locus_tag,product)%>% 
+  distinct() %>% 
+  group_by(locus_tag) %>%
+  slice_head(n = 1) ->
+  annotation.mRNA.df.short 
+
+
+methylationData.3.QC %>% 
+  filter(location == "GeneBody")  %>%
+  inner_join(annotation.mRNA.df.short) ->
+  methylationData.3.QC.GB
+
+
+methylationData.3.QC.GB %>%
+  mutate(GB_ID = paste(locus_tag,Location,Replicate2,Tissue,sep = "_")) ->
+  methylationData.3.QC.GB
+
+GB_ID = methylationData.3.QC.GB %>% distinct(GB_ID, locus_tag,Location,Replicate2,Tissue)
+
+
+
+
+
+```
+
+
+#### Distance to nearest TE analysis
+```{r }
+
+
+methylationData.3.QC.GB %>%
+  group_by(GB_ID) %>%
+  summarise( percent = mean(percent), nrOfExamples = n()) %>%
+  inner_join(GB_ID) %>%
+  left_join(GeneBody_TE_distance)->
+  methylationData.3.QC.GB.summary
+
+
+methylationData.3.QC.GB.summary %>%
+  group_by(GB_ID) %>%
+  slice_head(n = 1) %>%
+  ungroup() ->
+  methylationData.3.QC.GB.summary
+
+methylationData.3.QC.GB.summary %>%
+  mutate(
+    location = case_when(
+      distance < -500                ~ "Far Upstream",
+      distance < 0                   ~ "Near Upstream",
+      distance == 0                  ~ "Within",
+      distance > 0 & distance < 500  ~ "Close",
+      distance >= 500 & distance < 2000  ~ "Proximal",
+      distance >= 2000 & distance < 5000 ~ "Intermediate",
+      TRUE                           ~ "Long-range"
+    ),
+    location = factor(location, levels = c(
+      "Far Upstream", "Near Upstream", "Within", 
+      "Close", "Proximal", "Intermediate", "Long-range"
+    ))
+  ) %>%
+  mutate(
+    methylationLevel = case_when(
+      percent < 5                ~ "None",
+      percent >= 5 & percent < 25  ~ "Low",
+      percent >= 25 & percent < 75  ~ "Intermediate",
+      percent >= 75 & percent < 95 ~ "High",
+      TRUE                           ~ "All"
+    ),
+    methylationLevel = factor(methylationLevel, levels =rev( c(
+      "None", "Low", "Intermediate", "High","All"
+    )))
+  ) ->
+  methylationData.3.QC.GB.summary
+
+
+
+
+
+methylationData.3.QC.GB.summary%>%
+  inner_join(TE.info) ->
+  methylationData.3.QC.GB.summary
+  
+
+  
+
+
+methylationData.3.QC.TE %>%
+  select(TE_ID2,Location,Replicate2,Tissue, percent) %>%
+  rename(TE_percent = percent) %>%
+  group_by(TE_ID2,Location,Replicate2,Tissue) %>%
+  summarise(TE_percent = mean(TE_percent))->
+  methylationData.3.QC.TE.comparison
+
+
+
+
+methylationData.3.QC.GB.summary %>%
+  inner_join(methylationData.3.QC.TE.comparison, by = c("TE_ID2","Location","Replicate2","Tissue"))  %>%
+#  filter(TE_percent >1 & percent >1) %>%
+# filter(distance < 500) %>%
+  ggplot(aes(x = TE_percent, y = percent))  + 
+  geom_hex(bins = 30) +  # Adjust 'bins' to change resolution
+scale_fill_viridis_c(trans = "log10") +
+  theme_minimal() +
+  labs(title = "Point Density Map", 
+       fill = "Count of Points")  +
+  facet_wrap("location") ->
+  TE_GeneBody_methylation_distance_less500.location.plot
+  
+library(here)
+ggsave(here("figures","Figure4","TE_GeneBody_methylation_distance_less500.pdf"),
+       plot = TE_GeneBody_methylation_distance_less500.location.plot,
+       width = 8, height = 6, units = "in", dpi = 300)
+
+
+methylationData.3.QC.GB.summary %>%
+  inner_join(methylationData.3.QC.TE.comparison, by = c("TE_ID2","Location","Replicate2","Tissue"))  %>%
+#  filter(TE_percent >1 & percent >1) %>%
+# filter(distance < 500) %>%
+  ggplot(aes(x = TE_percent, y = percent))  + 
+  geom_hex(bins = 30) +  # Adjust 'bins' to change resolution
+scale_fill_viridis_c(trans = "log10") +
+  theme_minimal() +
+  labs(title = "Point Density Map", 
+       fill = "Count of Points")  +
+  facet_grid(location~TEclass) ->
+  TE_GeneBody_methylation.location.TEclass.plot
+
+
+ggsave(here("figures","Figure4","TE_GeneBody_methylation.location.TEclass.plot.pdf"),
+       plot = TE_GeneBody_methylation.location.TEclass.plot,
+       width = 20, height = 12, units = "in", dpi = 300)
+
+
+
+
+
+
+
+methylationData.3.QC.GB.summary%>%
+  ggplot(aes(x = as.factor(location), fill = methylationLevel)) +
+  geom_bar(alpha = 0.7, position = "fill") +
+  theme_minimal() +
+  labs(title = "Point Density Map", 
+       fill = "Count of Points")+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_fill_brewer(palette = "RdYlBu") -> distribution.methylationLevel
+
+methylationData.3.QC.GB.summary%>%
+  ggplot(aes(x = as.factor(location), fill = methylationLevel)) +
+  geom_bar(alpha = 0.7, position = "fill") +
+  theme_minimal() +
+  labs(title = "Point Density Map", 
+       fill = "Count of Points")+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_fill_brewer(palette = "RdYlBu") -> distribution.methylationLevel
+
+
+
+
+
+all <- methylationData.3.QC.GB.summary %>% mutate(methylationLevel = "All")
+
+bind_rows(methylationData.3.QC.GB.summary,all)%>%
+  ggplot(aes(x = log10(distance+1), color = methylationLevel)) +
+  geom_density(alpha = 0.7) +
+  theme_minimal() 
+
+
+
+methylationData.3.QC.GB.summary %>% 
+  group_by(location,methylationLevel) %>%
+  summarise(n = n()) %>%
+  pivot_wider(names_from = methylationLevel, values_from = n, values_fill = 0)->
+  table.methylationLevel.location
+
+
+
+
+
+
+```
+
+
+####PCA analysis
+
+```{r }
+
+
+methylationData.3.QC.GB.summary %>%
+  group_by(TE_ID2,Tissue) %>%
+  summarise(nrOfExamples = n()) -> methylationData.3.QC.GB.summary.2
+
+methylationData.3.QC.GB.summary.2 %>%
+  group_by(Tissue) %>%
+  summarise(n = max(nrOfExamples)) %>%
+  inner_join(methylationData.3.QC.GB.summary.2) %>%
+  group_by(TE_ID2) %>%
+  summarise(n = n()) %>%
+  filter(n == 3)  %>%
+  select(TE_ID2)->
+  GB.covered
+
+
+GB.covered
+  
+
+methylationData.3.QC.GB.summary %>%
+  inner_join(TE.covered) %>%
+  select(locus_tag,TE_ID2,Location,Replicate2,Tissue, percent) %>%
+  pivot_wider(values_from = "percent",names_from = c("Location","Replicate2","Tissue")) %>%
+  column_to_rownames(var = "locus_tag")%>%
+  drop_na()->                     # Removes any row with at least one NA->
+  methylationData.3.QC.GB.wide
+  
+  
+  methylationData.3.QC.GB.summary %>%ungroup() %>%
+    group_by(locus_tag,Location,Replicate2,Tissue) %>%
+    summarise(n = n()) %>%
+    arrange(-n)
+
+## PCA analysis
+PCAresult = PCAtools::pca(methylationData.3.QC.GB.wide[,-1],center = TRUE)
+rot = PCAresult$rotated[,1:6]
+
+## Cluster analysis
+dist_matrix <- dist(rot, method = "euclidean")
+hc <- hclust(dist_matrix, method = "ward.D2")
+
+#library(NbClust)
+#nb <- NbClust(rot, distance="euclidean", min.nc=2, max.nc=6, method="ward.D2")
+#nb$Best.nc
+
+
+#wss <- numeric(10)
+#for (k in 2:10) {
+#  clusters <- cutree(hc, k)
+#  wss[k] <- sum(sapply(unique(clusters), function(c) {
+#    pts <- rot[clusters == c, ]
+#    sum(scale(pts, scale=FALSE)^2)
+#  }))
+#}
+
+#plot(1:10, wss, type="b", xlab="k", ylab="Within-cluster SS")
+
+
+## Variance
+PCA.stats = data.frame(variance = PCAresult$variance, 
+                       PC = factor(names(PCAresult$variance), levels = names(PCAresult$variance)))
+ggplot(PCA.stats, aes(x = PC, y = variance) )+
+  geom_bar(stat = "identity", fill = "skyblue", color = "black") +
+  theme_minimal() +
+  labs(
+    title = "PC variance",
+    x = "PC",
+    y = "Variance"
+  )+theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 10),  # Rotate and adjust x-axis labels
+    axis.title.x = element_text(size = 12, face = "bold"),  # Format x-axis title
+    axis.title.y = element_text(size = 12, face = "bold")   # Format y-axis title
+  ) -> variation
+
+
+ggsave("~/MarasmiusMethylationRNA/figures/figure3/GB.PCA.variance.plot.pdf",
+       plot = variation, width = 10, height = 8, units = "in")
+
+
+PCAresult$rotated  %>%
+  rownames_to_column(var = "sampleID") %>%
+  inner_join(sampleInfo.TE.summary) %>%
+  ggplot(aes(x = PC1, y = PC2, color =Tissue, shape = Location )) +
+  geom_point(size = 3, alpha = 0.7) + # Adjust point size
+  scale_shape_manual(values = c(16, 17, 15, 18)) + # Custom shapes
+  theme_minimal() +
+  scale_color_manual(values = colors) +
+  labs(
+    title = "Scatter Plot with Four Classes",
+    x = "PC1 (29 % variance)",
+    y = "PC2 (8.6 % variance )",
+    shape = "Class"
+  )-> PCA.plot
+
+PCA.plot +variation
+  
+PCAresult$rotated  %>%
+  rownames_to_column(var = "sampleID") %>%
+  inner_join(sampleInfo.TE.summary)  %>%
+  ggplot(aes(x = PC1, y = PC2, color =Tissue, shape = Location,label =sampleID )) +
+  geom_point(size = 3, alpha = 0.7) + # Adjust point size
+  scale_shape_manual(values = c(16, 17, 15, 18)) + # Custom shapes
+  theme_minimal() +
+  scale_color_manual(values = colors) +
+  labs(
+    title = "Scatter Plot with Four Classes",
+    x = "PC1 (29 % variance)",
+    y = "PC2 (8.6 % variance )",
+    shape = "Class"
+  ) + geom_text_repel() -> PCA.plot.labels
+
+
+
+PCA.plot.labels
+
+
+breaks1 <- seq(from = -100, to = 300, length.out = 4)
+library(RColorBrewer)
+colors1 = colorRampPalette(rev(brewer.pal(n = 7, name =
+  "RdYlBu")))(4)
+myColor2 <-circlize::colorRamp2(breaks = breaks1,colors =colors1)
+
+
+library(ComplexHeatmap)
+
+pdf("~/MarasmiusMethylationRNA/figures/Figure3/TE.methylation.PCA.heatmap.pdf",
+    width = 1800, height = 1200)
+ComplexHeatmap::Heatmap(
+  PCAresult$rotated[1:3] ,
+  col = myColor2,
+  cell_fun = function(j, i, x, y, width, height, fill) {
+    grid.rect(
+      x, y, width = width, height = height,
+      gp = gpar(col = "darkgrey", fill = NA, lwd = 1) # Add gray borders
+    )
+  }
+) 
+dev.off()
+
+
+
+# Determine the optimal number of clusters
+# Plot the dendrogram
+plot(hc, main = "Hierarchical Clustering Dendrogram", sub = "", xlab = "", ylab = "Height", hang = -1, cex = 0.6)
+
+# Cut the dendrogram into 3 clusters
+clusters <- cutree(hc, k = 4)
+
+# Add cluster assignments to the data frame
+rot$cluster <- as.factor(clusters)
+
+
+
+
+
+ rot = rot %>% rownames_to_column("IDsample") 
+ methylationData.3.QC.annotation.distribution %>% 
+    select(Tissue,Location,Replicate2,methylation,location) %>%
+      mutate(IDsample = paste(Location,Replicate2,Tissue,sep = "_")) %>%
+    inner_join(rot) %>%
+    pivot_wider(values_from = "methylation", names_from = "location" )  %>%
+    ggplot(aes(x = GeneBody, y = TE, shape = Tissue,color = cluster)) + geom_point()+
+    theme_light()+
+    geom_text_repel(aes(label = IDsample), color = "black") -> fig3B.clustered
+     
+
+ PCAresult$rotated  %>%
+  rownames_to_column(var = "sampleID") %>%
+  inner_join(sampleInfo.TE.summary)  %>%
+  inner_join(rot) %>%
+  ggplot(aes(x = PC1, y = PC2, color =cluster, shape = Tissue,label =sampleID )) +
+  geom_point(size = 3, alpha = 0.7) + # Adjust point size
+  scale_shape_manual(values = c(16, 17, 15, 18)) + # Custom shapes
+  theme_minimal() +
+  labs(
+    title = "Scatter Plot with Four Classes",
+    x = "PC1 (29 % variance)",
+    y = "PC2 (8.6 % variance )",
+    shape = "Class"
+  ) +geom_text_repel(aes(label = sampleID), color = "black")  -> 
+  
+  PCA.plot.clustered
+ PCA.plot.clustered
+ 
+ 
+ GO annotation on the first loading 
+```
+
+
+#### Linear mixed model
+
+
+```{r}
+TE.summary.all %>%
+  group_by(TE_ID2,Tissue) %>%
+  summarise(n = n()) %>%
+  ungroup %>%
+  filter(n >=10) %>%
+  group_by(TE_ID2) %>%
+  summarise(n = n()) %>%
+  filter(n >=2) ->
+  TE.filtered
+
+TE.summary.all %>% filter(TE_ID2 %in% TE.filtered$TE_ID2) %>%
+  ungroup() %>%
+  distinct(TE_ID2,start) %>%
+  group_by(TE_ID2) %>%
+  summarise(n = n()) %>%
+  filter(n > 10) ->
+  TE.filtered.nCpG.nObs
+  
+
+```
+
+
+
+```{r}
+
+library(lme4)
+#install.packages("lmerTest")
+library(lmerTest)   # adds p-values
+
+
+
+
+
+dist.list.Tissue = list()
+for(TE in TE.filtered.nCpG.nObs$TE_ID2){
+  TEinfo = list()
+    methylationData.3.QC.TE %>%
+      filter(TE_ID2 == TE) %>%
+      select(Sample,Tissue,start,percent) ->
+      mat
+     model <- lmer(percent ~ Tissue + (1 | start), data = mat)
+       pval  <- anova(model)$`Pr(>F)`[1]
+     TEinfo[["Name"]] = TE
+     TEinfo[["data"]] = mat
+     TEinfo[["mixedLinearModel"]] = model
+     TEinfo[["pvalue"]] = pval
+     
+     dist.list.Tissue[[TE]] = TEinfo
+       
+}
+
+dist.list.Location = list()
+for(TE in TE.filtered.nCpG.nObs$TE_ID2){
+  TEinfo = list()
+    methylationData.3.QC.TE %>%
+      filter(TE_ID2 == TE) %>%
+      select(Sample,Location,start,percent) ->
+      mat
+     model <- lmer(percent ~ Location + (1 | start), data = mat)
+       pval  <- anova(model)$`Pr(>F)`[1]
+     TEinfo[["Name"]] = TE
+     TEinfo[["data"]] = mat
+     TEinfo[["mixedLinearModel"]] = model
+     TEinfo[["pvalue"]] = pval
+     
+     dist.list.Location[[TE]] = TEinfo
+       
+}
+
+dist.list.Rep = list()
+for(TE in TE.filtered.nCpG.nObs$TE_ID2){
+  TEinfo = list()
+    methylationData.3.QC.TE %>%
+      filter(TE_ID2 == TE) %>%
+      select(Sample,Replicate2,start,percent) ->
+      mat
+     model <- lmer(percent ~ Replicate2 + (1 | start), data = mat)
+       pval  <- anova(model)$`Pr(>F)`[1]
+     TEinfo[["Name"]] = TE
+     TEinfo[["data"]] = mat
+     TEinfo[["mixedLinearModel"]] = model
+     TEinfo[["pvalue"]] = pval
+     
+     dist.list.Rep[[TE]] = TEinfo
+       
+}
+
+
+TEspvalues.Tissue = list()
+for(TE in TE.filtered.nCpG.nObs$TE_ID2){
+  data.frame(
+  pvalue = dist.list.Tissue[[TE]][["pvalue"]],
+  TE_ID2 = dist.list.Tissue[[TE]][["Name"]],
+  Test = "Tissue"
+  ) ->
+  TEspvalues.Tissue[[as.character(TE)]]
+}
+
+TEspvalues.Location = list()
+for(TE in TE.filtered.nCpG.nObs$TE_ID2){
+  data.frame(
+  pvalue = dist.list.Location[[TE]][["pvalue"]],
+  TE_ID2 = dist.list.Location[[TE]][["Name"]],
+  Test = "Location"
+  ) ->
+  TEspvalues.Location[[as.character(TE)]]
+}
+
+TEspvalues.Rep = list()
+for(TE in TE.filtered.nCpG.nObs$TE_ID2){
+  data.frame(
+  pvalue = dist.list.Rep[[TE]][["pvalue"]],
+  TE_ID2 = dist.list.Rep[[TE]][["Name"]],
+  Test = "Rep"
+  ) ->
+  TEspvalues.Rep[[as.character(TE)]]
+}
+
+
+
+bind_rows(TEspvalues.Tissue) %>%
+  mutate(adj_pvalue = p.adjust(pvalue, method = "BH")) %>%
+  mutate(significant = "No") %>%
+  mutate(significant = replace(significant, adj_pvalue < (0.0001), "Yes")) ->
+  lmm_results.TE.Tissue
+
+
+bind_rows(TEspvalues.Location) %>%
+  mutate(adj_pvalue = p.adjust(pvalue, method = "BH")) %>%
+  mutate(significant = "No") %>%
+  mutate(significant = replace(significant, adj_pvalue < (0.0001), "Yes")) ->
+  lmm_results.TE.Location
+
+bind_rows(TEspvalues.Rep) %>%
+  mutate(adj_pvalue = p.adjust(pvalue, method = "BH")) %>%
+  mutate(significant = "No") %>%
+  mutate(significant = replace(significant, adj_pvalue < (0.0001), "Yes")) ->
+  lmm_results.TE.Rep
+
+lmm_results.TE = bind_rows(lmm_results.TE.Tissue,lmm_results.TE.Location,lmm_results.TE.Rep )
+
+
+lmm_results.TE %>% ggplot(aes(x = pvalue, color = Test)) +
+  geom_density( adjust = 1/10) +
+  labs(
+    title = "Density plot",
+    x = "p-value",
+    y = "Density",
+    shape = "Class"
+  ) + theme_light() ->
+  TE.pvalue.density.plot
+ggsave("~/MarasmiusMethylationRNA/figures/Figure3/3A.kruskal.distribution.plot.pdf",plot = TE.pvalue.density.plot,width = 180, height = 180, units = "mm", dpi = 300)
+
+
+lmm_results.TE %>% arrange(adj_pvalue) %>%
+  filter(significant == "Yes") ->
+  lmm_results.TE.significant
+lmm_results.TE.significant %>% 
+  group_by(Test) %>%
+  summarise(numberOfSignificant = n()) ->
+  lmm_results.TE.significant.summary
+
+```
+
+###  Aalysis of  significant TEs  
+```{r }    
+lmm_results.TE.Tissue %>% filter(significant == "Yes") %>%
+  arrange(adj_pvalue) ->
+  lmm_results.TE.Tissue.significant
+
+TE_tissue_DE = intersect(lmm_results.TE.Tissue.significant$TE_ID2,as.numeric( rownames(methylationData.3.QC.TE.wide))) 
+
+methylationData.3.QC.TE.wide[as.character(TE_tissue_DE),]->
+
+methylationData.3.QC.TE.sig.wide 
+
+
+
+
+
+```
+#### Cluster of TEs
+##### Hierarchical clustering with correct number of clusters
+```{r}
+
+
+## Cluster analysis
+dist_matrix <- dist(methylationData.3.QC.TE.sig.wide, method = "euclidean")
+hc <- hclust(dist_matrix, method = "ward.D2")
+library(NbClust)
+nb <- NbClust(methylationData.3.QC.TE.sig.wide, distance="euclidean", min.nc=2, max.nc=10, method="ward.D2")
+
+
+wss <- numeric(10)
+for (k in 2:10) {
+  clusters <- cutree(hc, k)
+  wss[k] <- sum(sapply(unique(clusters), function(c) {
+    pts <- methylationData.3.QC.TE.sig.wide[clusters == c, ]
+    sum(scale(pts, scale=FALSE)^2)
+  }))
+}
+
+plot(1:10, wss, type="b", xlab="k", ylab="Within-cluster SS")
+
+
+
+
+nrOfClusters = nb$Best.nc[[1]]
+
+nrOfClusters = 3
+clusters <- cutree(hc, nrOfClusters)
+
+
+clusters %>%  as.data.frame() %>%
+  rownames_to_column(var = "TE_ID2") %>%
+  rename(cluster = ".") ->
+  clusters
+
+
+
+
+```
+
+
+#####  Visualisation of 3 clusters
+
+```{r}
+
+
+clusters %>%
+  mutate(TE_ID2 = as.double(TE_ID2)) %>%
+  inner_join(methylationData.3.QC.TE) %>%
+  group_by(cluster, Tissue) %>%
+  summarise(mean = mean(percent), sd = sd(percent))->
+  clusters.Tissue.summary
+
+
+clusters.Tissue.summary %>% group_by(cluster) %>%
+  summarise(overallMean = mean(mean)) %>%
+  arrange(overallMean) %>%
+  mutate(clusterOrder = as.factor(row_number()))->
+  cluster.order
+  
+
+
+
+clusters %>%  
+  mutate(TE_ID2 = as.double(TE_ID2)) %>%
+  inner_join(methylationData.3.QC.TE) %>%
+  ungroup() %>%
+  distinct(TE_ID2,cluster,TEclass) %>%
+  group_by(cluster,TEclass) %>%
+  summarise(nrOfTEs = n()) %>%
+  arrange(cluster, -nrOfTEs)%>%
+  group_by(cluster) %>%
+  slice_head(n = 5)->
+  clusters.count.summary
+
+
+clusters.Tissue.summary %>%
+  mutate(clusterName = "Low Methylation") %>%
+  mutate(clusterName = replace(clusterName, 
+                               grepl(1, cluster),
+                               "Medium Methylation")) %>% 
+  
+  mutate(clusterName = replace(clusterName, 
+                               grepl(3, cluster),
+                               "High Methylation")) %>%
+  mutate(clusterName = factor(clusterName, 
+                              levels = c("Low Methylation",
+                                         "Medium Methylation",
+                                         "High Methylation"))) %>%
+  inner_join(clusters.count.summary)->
+clusters.summary
+
+clusters.Tissue.summary %>%
+  inner_join(clusters.count.summary) %>%
+  inner_join(cluster.order)->
+clusters.summary
+  
+
+
+clusters %>%
+  mutate(TE_ID2 = as.double(TE_ID2)) %>%
+  inner_join(methylationData.3.QC.TE) %>%
+  group_by(TE_ID2,Tissue,Sample,cluster ) %>%
+  summarise(percent = mean(percent) )%>%
+  inner_join(clusters.summary) %>%
+  ggplot(aes(x = clusterOrder, y = percent, fill = Tissue)) +
+  geom_boxplot() +
+  theme_light() +
+  labs(
+    title = "Methylation levels per TE cluster",
+    x = "TE Cluster",
+    y = "Percent Methylation"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 10),  # Rotate and adjust x-axis labels
+    axis.title.x = element_text(size = 12, face = "bold"),  # Format x-axis title
+    axis.title.y = element_text(size = 12, face = "bold")   # Format y-axis title
+  )+
+  scale_fill_manual(values = colors) -> distributionPerClusterPlot
+   
+     
+
+ha = HeatmapAnnotation(
+    cluster = as.factor(clusters$cluster)
+)
+
+distributionPerClusterPlot
+ComplexHeatmap::Heatmap(t(methylationData.3.QC.TE.wide[as.character(TE_tissue_DE),]),
+                        show_column_names = FALSE,
+                        show_column_dend = TRUE, 
+                        cluster_columns = hc,
+                        column_split = nrOfClusters,
+                        top_annotation = ha,
+                        cluster_rows =TRUE,  split = 2
+) 
+
+distributionPerClusterPlot
+
+
+clusters %>%   
+  mutate(TE_ID2 = as.double(TE_ID2)) %>%
+  inner_join(methylationData.3.QC.TE) %>%
+  distinct(TE_ID2,cluster,TEclass) %>%
+  group_by(cluster,TEclass) %>%
+  summarise(nrOfTEs = n())  %>%
+  inner_join(cluster.order) %>%
+  filter(TEclass %in% clusters.count.summary$TEclass) %>%
+  ggplot(aes(x = clusterOrder, y = nrOfTEs, fill = TEclass)) +
+  geom_bar(stat = "identity", position = "fill") +
+  theme_light() +
+  labs(
+    title = "TE class distribution per TE cluster",
+    x = "TE Cluster",
+    y = "Number of TEs"
+  ) -> distribution
+
+
+cluster.order
+
+clusters%>%   
+  inner_join(clusters.count.summary) %>%   
+  mutate(TE_ID2 = as.double(TE_ID2)) %>%
+  inner_join(methylationData.3.QC.TE) %>%
+  distinct(TE_ID2,cluster,TEclass) %>%
+  group_by(cluster,TEclass) %>%
+  summarise(nrOfTEs = n())  %>%
+  inner_join(cluster.order) %>%
+  ggplot(aes(x = clusterOrder, y = nrOfTEs)) +
+  geom_bar(stat = "identity") +
+  theme_light() +
+  labs(
+    title = "TE class distribution per TE cluster",
+    x = "TE Cluster",
+    y = "Number of TEs"
+  ) -> distribution2
+
+
+
+distributionPerClusterPlot/distribution/distribution2
+
+
+
+
+```
+
+
+
+
+
+```{r}
+
+
+
+ComplexHeatmap::Heatmap(t(methylationData.3.QC.TE.wide[as.character(TE_tissue_DE),]),
+                        show_column_names = FALSE,
+                        show_column_dend = FALSE, column_split = 5,
+                        cluster_rows =  hc,split = 4
+) -> HeatMap.TE.significant
+
+
+
+
+variation+ PCA.plot + fig3B.clustered + HeatMap.TE.significant +
+  plot_layout(ncol = 2, nrow = 2, guides = "collect") +
+  plot_annotation(tag_levels = 'A')-> figure3
+
+
+ggsave(PCA.plot.clustered)("~/MarasmiusMethylationRNA/figures/Figure3/Figure3.TE.methylation.PCA.2clusters.pdf",
+       plot = figure3, width = 12, height = 10, units = "in", dpi = 300,
+       plot = fig3B.clustered)
+
+```
+
+
+
+```{r }
+lmm_results.TE.Tissue.significant %>% 
+  slice_head(n = 20) %>%inner_join(methylationData.3.QC.TE) -> examples
+
+
+
+
+examples %>% 
+  mutate(TEclass_ID = paste(TEclass, TE_ID2, sep = "\n")) %>%
+  arrange(TE_ID2,TEclass) %>%
+  filter(TEclass != "Gypsy") %>%
+  ggplot(aes(x = Tissue, y = percent)) + geom_violin() + facet_wrap(facets = "TEclass_ID") 
+
+
+TEclass_stats %>%
+  mutate(TEclass = factor(TEclass,levels = TEclass_stats$TEclass)) %>%
+  ggplot(aes(x= TEclass, y = ratio)) +
+  geom_bar(stat = "identity", fill = "steelblue") +  # Bar plot
+  theme_minimal() +  # Minimal theme
+  labs(x = "TE type", y = "Ratio (Sig/nonSig)") +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 10),  # Rotate and adjust x-axis labels
+    axis.title.x = element_text(size = 12, face = "bold"),  # Format x-axis title
+    axis.title.y = element_text(size = 12, face = "bold")   # Format y-axis title
+  )
+
+TEclass_stats %>%
+  mutate(TEclass = factor(TEclass,levels = TEclass_stats$TEclass)) %>%
+  mutate(Total = No+Yes) %>%
+  ggplot(aes(x= TEclass, y = Total)) +
+  geom_bar(stat = "identity", fill = "steelblue") +  # Bar plot
+  theme_minimal() +  # Minimal theme
+  labs(x = "TE type", y = " Number of TEs") +
+  theme(
+    axis.title.x = element_blank(),  # Remove x-axis title
+    axis.text.x = element_blank() ,   # Format x-axis title
+    axis.title.y = element_text(size = 12, face = "bold")   # Format y-axis title
+  ) -> countPlot
+
+TEclass_stats %>%
+  mutate(TEclass = factor(TEclass,levels = TEclass_stats$TEclass)) %>%
+  pivot_longer(names_to = "Significant", values_to = "Count", cols = c(No, Yes))  %>%
+  mutate(Significant = factor(Significant, levels = c("Yes","No"))) %>%
+  group_by(TEclass) %>%
+  mutate(Fraction = Count / sum(Count)) %>% 
+  ggplot(aes(x= TEclass, y = Fraction, fill = Significant)) +
+  geom_bar(stat = "identity") +  # Bar plot
+  theme_minimal() +  # Minimal theme
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1,vjust = 0.5, size = 10),  # Rotate and adjust x-axis labels
+    axis.title.x = element_text(size = 12, face = "bold"),  # Format x-axis title
+    axis.title.y = element_text(size = 12, face = "bold")   # Format y-axis title
+  ) -> ratioPlot
+
+
+library(patchwork)
+countPlot/ratioPlot
+
+
+
+```
+
+
+
+#### Get where the methylation is the highest
+```{r}
+
+methylationData.3.QC.TE %>%
+  ungroup() %>% 
+  group_by(TE_ID2,Tissue) %>%
+  summarise(mean = mean(percent)) ->
+  methylationData.3.QC.TE.summary
+
+methylationData.3.QC.TE.summary %>%
+  group_by(TE_ID2) %>%                        # Group by TE_ID2
+  mutate(highest_tissue = Tissue[which.max(mean)]) %>%  # Find the tissue with the max mean
+  ungroup() %>%
+  inner_join(kruskal_results.TE.significant) %>%
+  pivot_wider(values_from = "mean", names_from = "Tissue") %>%
+  arrange(p_value) %>% inner_join(TE.info) ->
+  TE.class.info
+
+
+methylationData.3.QC.TE.summary %>%
+  group_by(TE_ID2) %>%                        # Group by TE_ID2
+  mutate(highest_tissue = Tissue[which.max(mean)]) %>%  # Find the tissue with the max mean
+  ungroup()  %>%
+  distinct(TE_ID2,highest_tissue)  %>%
+  inner_join(kruskal_results.TE.significant) %>%
+  inner_join(TE.info) %>%
+  dplyr::count(highest_tissue,TEclass) %>%
+  pivot_wider(names_from = "highest_tissue",
+              values_from = "n",
+              values_fill = 0) %>%
+  arrange(-lamella) %>%
+  inner_join(TEclass_stats)  -> TEclass_stats.2
+
+
+
+
+TEclass_stats.2 %>%
+  mutate(TEclass = factor(TEclass,levels = TEclass_stats$TEclass)) %>%
+  pivot_longer(names_to = "Significant", values_to = "Count", cols = c(lamella,spore,stipe,No))  %>%
+  mutate(Significant = factor(Significant, levels = c("spore","lamella","stipe","No"))) %>%
+  group_by(TEclass) %>%
+  mutate(Fraction = Count / sum(Count)) %>% 
+  ggplot(aes(x= TEclass, y = Fraction, fill = Significant)) +
+  geom_bar(stat = "identity") +  # Bar plot
+  theme_minimal() +  # Minimal theme
+  labs(x = "TE type", y = " Fraction") +
+  scale_fill_manual(values = colors) + 
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1,vjust = 0.5, size = 10),  # Rotate and adjust x-axis labels
+    axis.title.x = element_text(size = 12, face = "bold"),  # Format x-axis title
+    axis.title.y = element_text(size = 12, face = "bold")   # Format y-axis title
+  )-> ratioPlot.2
+  
+countPlot/ratioPlot.2
+
+
+
+```
+
+#### Check coverage correlation to significant methylation pattern (Defence approach)
+```{r}
+TE.class.info %>% select(TE_ID2,highest_tissue) -> TE.sig.tissue
+
+kruskal_results.TE %>% inner_join(TEdf) %>%
+  group_by(seqid,significant) %>%
+  summarise(n = n()) -> TE.position.distribution
+  
+kruskal_results.TE %>%
+  inner_join(TEdf.long) %>%
+  ungroup() %>%
+  group_by(seqid) %>%
+  summarise(n = n()) %>%
+  filter(n >100) %>%
+  ungroup() %>%
+  select(seqid) %>%
+  inner_join(kruskal_results.TE) %>%
+  inner_join(TEdf.long)  %>%
+  left_join(TE.sig.tissue) %>%
+  mutate(highest_tissue = replace(highest_tissue,is.na(highest_tissue),"No")) %>%
+  mutate(highest_tissue = factor(highest_tissue,
+                                 levels = c("spore","lamella","stipe","No")))  ->
+  kruskal_results.TE.filtered
+
+
+kruskal_results.TE.filtered %>%
+  ggplot(aes(x = seqid, y = start, color = highest_tissue )) + 
+    geom_point(size = 0.6, alpha= 0.6) + facet_wrap(facets = "TEclass")+
+    theme_minimal() +  # Minimal theme
+    scale_color_manual(values = colors)  + 
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1,vjust = 0.5, size = 8),  # Rotate and adjust x-axis labels
+    axis.title.x = element_text(size = 12, face = "bold"),  # Format x-axis title
+    axis.title.y = element_text(size = 12, face = "bold")   # Format y-axis title
+  )
+
+```
+
+##### Gypsy
+```{r}
+     
+kruskal_results.TE.filtered %>% filter(TEclass =="Gypsy") ->
+  kruskal_results.TE.filtered.Gypsy
+
+
+
+kruskal_results.TE.filtered.Gypsy %>%
+  ggplot(aes(x =highest_tissue , y = start, color = highest_tissue )) + 
+    geom_point(size = 0.6, alpha= 0.4) +
+  facet_wrap(facets = "seqid")+  
+  theme_minimal() +  # Minimal theme
+  scale_color_manual(values = colors)  + 
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1,vjust = 0.5, size = 10),  # Rotate and adjust x-axis labels
+    axis.title.x = element_text(size = 12, face = "bold"),  # Format x-axis title
+    axis.title.y = element_text(size = 12, face = "bold")   # Format y-axis title
+  )
+    
+
+
+
+kruskal_results.TE.filtered.Gypsy %>%
+   group_by(seqid,highest_tissue) %>%
+   summarise(n = n())  %>% 
+  ggplot(aes(x= seqid, y = n, fill = highest_tissue)) +
+  geom_bar(stat = "identity") +  # Bar plot
+  theme_minimal() +  # Minimal theme
+  labs(x = "Chromosome", y = " Number of TEs") +
+  scale_fill_manual(values = colors) + 
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 10),  # Rotate and adjust x-axis labels
+    axis.title.x = element_text(size = 12, face = "bold"),  # Format x-axis title
+    axis.title.y = element_text(size = 12, face = "bold")   # Format y-axis title
+  )
+  
+ 
+ kruskal_results.TE.filtered.Gypsy %>%
+   ggplot(aes(x = start, color =highest_tissue) )+ facet_wrap(facets = "seqid")+  # Bar plot
+  theme_minimal() +
+    scale_color_manual(values = colors)+ geom_density( adjust = 0.2) +
+   geom_density(color = "black", adjust = 0.2)+ scale_y_continuous(
+    limits = c(0, 0.000003), # Set the y-axis range to show only 4 to 8
+    expand = c(0, 0)  # Remove padding at the edges
+  ) 
+ 
+ kruskal_results.TE.filtered.Gypsy %>%
+   ggplot(aes(y = start,x = seqid, color =highest_tissue) )+ 
+   theme_minimal() +
+   scale_color_manual(values = colors)+ 
+   geom_violin(position="identity",adjust = 0.2, color = "black")+
+   geom_violin(position="identity",adjust = 0.2,alpha=0.0)+ 
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 10),  # Rotate and adjust x-axis labels
+    axis.title.x = element_text(size = 12, face = "bold"),  # Format x-axis title
+    axis.title.y = element_text(size = 12, face = "bold")   # Format y-axis title
+  )-> violinPlot
+   
+   
+   scale_y_continuous(
+    limits = c(0, 0.000003), # Set the y-axis range to show only 4 to 8
+    expand = c(0, 0)  # Remove padding at the edges
+  ) 
+
+ 
+ 
+ 
+
+```
+
+###  mRNA analysis
+
+####  Non-Parametric Test (Kruskal-Wallis)
+```{r }
+  
+methylationData.3.QC %>%
+  filter(location == "GeneBody")  ->
+  methylationData.3.QC.mRNA
+
+
+
+
+methylationData.3.QC.mRNA %>%
+  group_by(Name) %>%
+  summarise(
+    p_value = tryCatch({
+      kruskal.test(percent ~ Tissue, data = cur_data())$p.value
+    }, error = function(e) NA)
+  ) %>%
+  mutate(significant = "No") %>%
+  mutate(significant = replace(significant, p_value < 0.0000001, "Yes")) ->
+  kruskal_results.mRNA
+
+
+
+# Filter significant results
+kruskal_results.mRNA %>%
+  filter(!is.na(p_value) & p_value < 0.00001)%>%
+  arrange(p_value) ->
+  kruskal_results.mRNA.sig
+
+methylationData.3.QC.mRNA %>% 
+  group_by(Name,Tissue ) %>%
+  summarise(depth = mean(depth), percent = mean(percent))->
+  methylationData.3.QC.mRNA.Name.Tissue.summary
+
+methylationData.3.QC.mRNA.Name.Tissue.summary %>%
+  group_by(Name) %>%
+  summarise(max = max(percent),min = min(percent)) %>%
+  inner_join(methylationData.3.QC.mRNA.Name.Tissue.summary) %>%
+  filter(percent == max) ->
+  methylationData.3.QC.mRNA.Name.Tissue.summary.max 
+
+  methylationData.3.QC.mRNA.Name.Tissue.summary.max %>%
+  inner_join(kruskal_results.mRNA.sig) ->
+    methylationData.3.QC.mRNA.Name.Tissue.summary.max.sig
+
+
+methylationData.3.QC.mRNA.Name.Tissue.summary.max.sig %>%
+  inner_join(annotation.mRNA.df) -> 
+  methylationData.3.QC.mRNA.Name.Tissue.summary.max.sig
+
+
+methylationData.3.QC.mRNA %>% filter(Name == "XM_043160398.1") %>%
+  ggplot(aes(x = Tissue, y = percent)) + geom_violin() 
+
+methylationData.3.QC.mRNA %>% filter(Name == "XM_043152787.1")  %>%
+  ggplot(aes( x = start, y = percent, color = Tissue)) + geom_point(size = 0.3, aplpha = 0.5) +
+  geom_smooth()
+
+
+
+kruskal_results.mRNA.sig %>% slice_head(n = 5)  -> 
+  top5.mRNA
+
+methylationData.3.QC.mRNA   %>% 
+  filter(Name %in%  top5.mRNA$Name) %>%
+  mutate(Name = factor(Name, levels = top5.mRNA$Name)) %>%
+  ggplot(aes(x = start, y = percent, color = Tissue)) +
+  geom_point( size = 0.5, alpha = 0.4) + geom_smooth(se = FALSE) +
+  scale_color_manual(values = colors) + ylim( c(0,100)) +
+  labs(
+    title = "Methylation across different TEs (top 5 significant)",
+    x = "Position",
+    y = "Percent methylated"
+  ) + facet_wrap("Name", scales = "free_x")   +
+  theme_light() -> examples.methylation
+  
+
+methylationData.3.QC.TE %>% 
+  filter(TE_ID2 %in%  top5.te$TE_ID2) %>%
+  ggplot(aes(x = start, y = depth, color = Tissue)) +
+  geom_point( size = 0.5, alpha = 0.4) + geom_smooth(se = FALSE) +
+  scale_color_manual(values = colors) + ylim( c(0,40))  +
+  labs(
+    title = "Depth across different TEs (top 5 significant)",
+    x = "Position in TE",
+    y = "Depth"
+  ) + facet_wrap(c("TE_ID2","TEclass"),nrow = 1, scales = "free_x")   +
+  theme_light()  -> examples.depth
+
+
+
+```
+
+
+### mRNA methylation levels
+
+```{r }
+methylationData.3.QC.mRNA %>%
+  group_by(Name,Sample,Location,Replicate2,Tissue) %>%
+  summarise( percent = mean(percent)) ->
+  methylationData.3.QC.mRNA.Name.Tissue.summary
+
+
+methylationData.3.QC.mRNA.Name.Tissue.summary %>%
+  mutate(methylationLevel = "All") %>%
+  mutate(methylationLevel = replace(methylationLevel, percent < 90, "High")) %>%
+  mutate(methylationLevel = replace(methylationLevel, percent < 75 , "Medium"))%>%
+  mutate(methylationLevel = replace(methylationLevel, percent < 30 , "Low"))%>%
+  mutate(methylationLevel = replace(methylationLevel, percent < 5 , "Nothing"))  ->
+methylationData.3.QC.mRNA.Name.Tissue.summary      
+  
+methylationData.3.QC.mRNA.Name.Tissue.summary %>%
+  group_by(Sample, Tissue, methylationLevel) %>%
+  summarise(n = n())
+
+
+methylationData.3.QC.mRNA.Name.Tissue.summary %>%
+  filter(methylationLevel == "High" | methylationLevel == "Medium" ) %>%
+  group_by(Name) %>%
+  summarise(
+    percent = mean(percent),
+    n = n()
+  )  %>%
+  filter(n == 26 )  %>%
+  filter( percent > 60)  ->
+  mRNA.high.methylation
+  
+         
+  methylationData.3.QC.mRNA.Name.Tissue.summary %>%ggplot(aes(x = Sample, y = percent, fill = Tissue)) +
+           geom_violin()
+
+
+```
+
+
+###  Both analysis
+
+####  Non-Parametric Test (Kruskal-Wallis)
+```{r }
+  
+methylationData.3.QC %>%
+  filter(location == "Both")  ->
+  methylationData.3.QC.Both
+
+
+
+
+methylationData.3.QC.Both %>%
+  group_by(Name) %>%
+  summarise(
+    p_value = tryCatch({
+      kruskal.test(percent ~ Tissue, data = cur_data())$p.value
+    }, error = function(e) NA)
+  ) %>%
+  mutate(significant = "No") %>%
+  mutate(significant = replace(significant, p_value < 0.0000001, "Yes")) ->
+  kruskal_results.Both
+
+
+
+# Filter significant results
+kruskal_results.Both %>%
+  filter(!is.na(p_value) & p_value < 0.0000000001)%>%
+  arrange(p_value) ->
+  kruskal_results.Both.sig
+
+methylationData.3.QC.Both %>% 
+  group_by(Name,Tissue ) %>%
+  summarise(depth = mean(depth), percent = mean(percent))->
+  methylationData.3.QC.Both.Name.Tissue.summary
+
+methylationData.3.QC.Both.Name.Tissue.summary %>%
+  group_by(Name) %>%
+  summarise(max = max(percent),min = min(percent)) %>%
+  inner_join(methylationData.3.QC.Both.Name.Tissue.summary) %>%
+  filter(percent == max) ->
+  methylationData.3.QC.Both.Name.Tissue.summary.max 
+
+  methylationData.3.QC.Both.Name.Tissue.summary.max %>%
+  inner_join(kruskal_results.Both.sig) ->
+    methylationData.3.QC.Both.Name.Tissue.summary.max.sig
+
+
+methylationData.3.QC.Both.Name.Tissue.summary.max.sig %>%
+  inner_join(annotation.mRNA.df) -> 
+  methylationData.3.QC.Both.Name.Tissue.summary.max.sig
+
+
+kruskal_results.Both.sig %>% slice_head(n = 5)  -> 
+  top5.both
+
+methylationData.3.QC.Both   %>% 
+  filter(Name %in%  top5.both$Name) %>%
+  mutate(Name = factor(Name, levels = top5.both$Name)) %>%
+  ggplot(aes(x = start, y = percent, color = Tissue)) +
+  geom_point( size = 0.5, alpha = 0.4) + geom_smooth(se = FALSE) +
+  scale_color_manual(values = colors) + ylim( c(0,100)) +
+  labs(
+    title = "Methylation across different Both",
+    x = "Position",
+    y = "Percent methylated"
+  ) + facet_wrap("Name", scales = "free_x")   +
+  theme_light() -> examples.Both.methylation
+  
+
+methylationData.3.QC.TE %>% 
+  filter(TE_ID2 %in%  top5.te$TE_ID2) %>%
+  ggplot(aes(x = start, y = depth, color = Tissue)) +
+  geom_point( size = 0.5, alpha = 0.4) + geom_smooth(se = FALSE) +
+  scale_color_manual(values = colors) + ylim( c(0,40))  +
+  labs(
+    title = "Depth across different TEs (top 5 significant)",
+    x = "Position in TE",
+    y = "Depth"
+  ) + facet_wrap(c("TE_ID2","TEclass"),nrow = 1, scales = "free_x")   +
+  theme_light()  -> examples.depth
+
+
+
+
+
+```
+
+
+### Compare TE and mRNA
+```{r }
+
+
+
+# Place the TEs on the chromosomes.
+methylationData.3.QC.TE.summary %>%
+  inner_join(TEdf.long) -> methylationData.3.QC.TE.summary.location
+
+# Keep only the long chromosomes
+methylationData.3.QC.TE.summary.location %>%
+  group_by(seqid) %>%
+  summarise(n = n()) %>%
+  filter(n > 50) %>%
+  select(seqid)->
+  chrs
+  
+chrs2 = chrs[1:11,]
+
+
+# Rename so that mRNA and TE can be joined
+methylationData.3.QC.TE.summary.location %>%
+  select(Tissue, mean,  seqid, start) %>%
+  mutate(type = "TE") ->
+  ME.TE.location
+
+methylationData.3.QC.mRNA.Name.Tissue.summary  %>%
+  inner_join(annotation.mRNA.df) %>%
+  filter(seqid %in% chrs2$seqid ) %>%
+  select(Tissue, percent,  seqid, start) %>%
+  dplyr::rename(mean = "percent") %>%
+  mutate(type = "mRNA") ->
+  ME.mRNA.location
+
+bind_rows(ME.TE.location,ME.mRNA.location)->
+  ME.TE.mRNA.location
+
+ME.mRNA.location%>%
+  filter(seqid %in% chrs2$seqid) %>%
+  ggplot(aes(start,y =mean , color = Tissue)) + geom_point(size = 0.1) +
+  facet_grid(Tissue~seqid) +
+    theme_minimal()+
+    scale_color_manual(values = colors) + ggtitle("mRNA methylation level") -> plot3
+
+ME.TE.location %>%
+  filter(seqid %in% chrs2$seqid) %>%
+  ggplot(aes(start,y =mean , color = Tissue)) + geom_point(size = 0.1) +
+  facet_grid(Tissue~seqid) +
+    theme_minimal()+
+    scale_color_manual(values = colors)+ ggtitle("TE methylation level")   -> plot1
+
+ME.TE.mRNA.location %>% inner_join(TEdf.long) %>%
+  filter(TEclass== "Gypsy") %>%
+  filter(seqid %in% chrs2$seqid) %>%
+  ggplot(aes(start,y =mean , color = type)) + geom_point(size = 0.1) +
+  facet_grid(TEclass~seqid) +
+    theme_minimal() ->plot2
+
+ME.TE.mRNA.location %>% inner_join(TEdf.long) %>%
+  filter(mean > 0.24) %>%
+  filter(TEclass== "Gypsy") %>%
+  filter(seqid %in% chrs2$seqid[1:3]) %>%
+  ggplot(aes(start, color = type)) + geom_density(size = 0.5,bw = 50000) +
+  facet_grid(TEclass~seqid) +
+    theme_minimal() ->plot4
+
+ME.TE.mRNA.location %>% inner_join(TEdf.long) %>%
+  filter(mean < 0.24) %>%
+  filter(TEclass== "Gypsy") %>%
+  filter(seqid %in% chrs2$seqid) %>%
+  ggplot(aes(start, color = type)) + geom_density(size = 0.5,bw = 50000) +
+  facet_grid(TEclass~seqid) +
+    theme_minimal() ->plot5
+
+annotation.mRNA.df %>%
+  filter(seqid %in% chrs2$seqid[1:3]) %>%
+  ggplot(aes(start)) + geom_density(size = 0.3,bw = 50000) +
+  facet_grid(.~seqid) +
+    theme_minimal() -> plot6
+
+
+plot3+plot5+plot4+plot1+ plot_layout(heights = c(2,1,1,2))
+ggsave("../../results/meDNA/TE/TE.mRNA.location.pdf", width = 30, height = 10)
+
+ME.TE.mRNA.location %>%
+  filter(seqid %in% chrs2$seqid[1:3]) %>%
+  ggplot(aes(start,y =mean , color = type)) + geom_point(size = 0.1) +
+  facet_grid(Tissue~seqid) +
+    theme_minimal()+ ggtitle(" Methylation level")  -> plot6
+
+
+plot5+plot4+plot6+ plot_layout(heights = c(1,1,2))
+
+
+ME.TE.location %>%
+  filter(seqid %in% chrs2$seqid[11]) %>%
+  ggplot(aes(start,y =mean , color = Tissue)) + geom_point(size = 0.1) +
+  facet_grid(Tissue~seqid) +
+    theme_minimal()+
+    scale_color_manual(values = colors)+ ggtitle("TE methylation level")   -> plot1
+
+
+ 
+  
+  
+  
+
+```
+
+```{r}
+
+GOclass_counts <- kruskal_results.mRNA %>%
+  inner_join(annotation.mRNA.GO.df) %>%
+  group_by(GO, significant) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  pivot_wider(names_from = significant, values_from = count, values_fill = 0) %>%
+  rename(No = "No", Yes = "Yes") %>%
+  mutate(ratio = No/Yes) %>%
+  mutate(totalYes = sum(Yes)) %>%
+  mutate(totalNo = sum(No)) %>%
+  mutate(average =sum(Yes)/sum(No) )
+
+
+GOclass_stats <- GOclass_counts %>%
+  rowwise() %>%
+  mutate(
+    p_value = fisher.test(matrix(c(No, Yes, 8997, 29830), nrow = 2))$p.value
+  ) %>%
+  ungroup() %>% arrange(-ratio) %>%
+  mutate(ratio = Yes/No) %>%
+  filter(p_value < 0.00000001) %>%
+  arrange(p_value)
+
+
+
+```
+
+```{r}
+
+methylationData.3.QC.TE %>%
+  ggplot(aes(x = Tissue, fill = methylationLevel ))+ geom_bar(position = "fill") +  # Replace with your desired geom
+  theme(axis.text.x = element_text(angle = 70, hjust = 1)) + facet_wrap("TEclass")
+
+
+ggsave("../../results/meDNA/TE/MethylationDistribution.TEclass.pdf")
+
+
+
+
+
+methylationData.3.QC.TE %>%ungroup() %>% 
+  group_by(TE_ID2,Tissue) %>%
+  filter(!is.na(percent)) %>%
+  summarise(percent = mean(percent)) %>%
+  pivot_wider(values_from = "percent",names_from = "Tissue") %>%
+  ggplot(aes(x = spore, y = lamella)) + geom_point(size = 0.1)+ geom_smooth(method = "lm") +geom_density_2d_filled(alpha = 0.)
+
+  
+
+methylationData.3.QC.TE %>%
+  ungroup() %>%
+  dplyr::count(TE_ID2, Tissue) 
+
+methylationData.3.QC.TE %>%
+  summarise(has_na = any(is.na(percent)))
+
+methylationData.3.QC.TE %>%
+  ungroup() %>%
+  group_by(TE_ID2, Tissue) %>%
+  summarise(group_size = n())
+
+```
+
+```{r}
+
+
+
+#methylationData.3 = read_csv("../../data/meDNA/methylationData.raw.annotated.csv")
+
+
+methylationData.3.QC %>%
+  filter(depth>10)%>% 
+  ggplot(aes( x =log2(percent+1),
+              color = Tissue,
+              linetype = as.factor(Replicate))) +
+  geom_density() +
+  facet_grid(Location~location)
+
+
+
+
+
+methylationData.3.wide %>% column_to_rownames(var = "posID") -> 
+  methylationData.3.wide
+
+```
+
+#### Coding gene analysis
+```{r }
+
+methylationData.3.QC %>%
+  filter(location == "GeneBody")->
+  MD.mRNA.QC
+
+
+samples = MD.mRNA.QC %>% ungroup() %>% distinct(Sample)
+
+mRNA.data = list()
+
+for(i in 1:nrow(samples)){
+  MD.mRNA.QC %>%
+    filter(Sample == samples$Sample[[i]]) ->
+    MD.mRNA.QC.sample
+  MD.mRNA.QC.sample%>%
+  group_by(Name) %>%
+  summarise(depth = mean(depth), percent = mean(percent)) %>%
+    mutate(Sample = samples$Sample[[i]]) ->
+  MD.mRNA.QC.sample.summary
+  mRNA.data[[samples$Sample[[i]]]] = MD.mRNA.QC.sample.summary
+}
+
+MD.mRNA.summary = bind_rows(mRNA.data)
+
+
+MD.mRNA.summary %>%
+  group_by(Sample) %>%
+  summarise(n = n())
+
+
+MD.mRNA.summary %>%
+  group_by(Name) %>%
+  summarise(n = n()) %>%
+  filter(n == 26) %>% 
+  inner_join(MD.mRNA.summary) ->
+  MD.mRNA.summary.QC
+
+
+MD.mRNA.summary.QC %>% inner_join(samples.ring.methyl.df) -> 
+  MD.mRNA.summary.QC
+
+MD.mRNA.summary.QC %>% group_by(Name,Tissue ) %>%
+  summarise(mean = mean(percent) , sd =sd(percent) ) ->
+  MD.mRNA.summary.QC.summary
+
+MD.mRNA.summary.QC.summary %>% group_by(Name) %>%
+  summarise(mean = mean(mean) , sd =sd(mean) ) %>%
+  arrange(-sd)
+
+
+MD.mRNA.summary.QC.summary %>% select(Name,Tissue,mean) %>%
+  pivot_wider(names_from = "Tissue",values_from = "mean") ->
+  MD.mRNA.summary.QC.wide
+
+ggplot(MD.mRNA.summary.QC.wide, aes(x = lamella, y = stipe)) + 
+  geom_point()
+
+
+```
+
+
+
+## Spore methylation pattern (check litterature)
+
+## Check coverage of different TE for getting information about abundance of TEs
+Probing TE data for the different classes if they have increased or decreased in the different tissues. 
+```{}
+
+
+
+```
+
+## Check TE expression 
+Get epxression levels for the 
+```{}
+
+
+```
+
+
+ 
+
+
