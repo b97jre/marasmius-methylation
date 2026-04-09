@@ -1,0 +1,21 @@
+Name,Class,Order,Superfamily / Notes
+Copia,I (Retro),LTR,One of the most common LTR retrotransposons.
+Gypsy,I (Retro),LTR,"LTR retrotransposon, often abundant in plants/fungi."
+DIRS,I (Retro),DIRS-like,Unusual LTR-like elements with tyrosine recombinase.
+LINE,I (Retro),LINE,Non-LTR retrotransposons (Long Interspersed Elements).
+Ngaro,I (Retro),LTR-like,Related to DIRS; common in eukaryotes/fungi.
+LTRU,I (Retro),LTR,"""LTR-Unclassified""—likely an LTR element of unknown family."
+hAT,II (DNA),TIR,"hobo-Activator-Tam3 superfamily; ""Cut-and-paste."""
+TcMar,II (DNA),TIR,"Tc1-Mariner; widely distributed ""Cut-and-paste."""
+MULE,II (DNA),TIR,"Mutator-like elements; known for ""gene capturing."""
+Harbinger,II (DNA),TIR,PIF/Harbinger superfamily.
+Helitron,II (DNA),Helitron,"Subclass 2; uses ""rolling-circle"" replication."
+CMC,II (DNA),TIR,"CACTA, Mirage, and Chapaev (often grouped)."
+Academ,II (DNA),TIR,Recently identified DNA transposon lineage.
+DNAU,II (DNA),TIR (likely),"""DNA-Unclassified""—usually a TIR-type element."
+Dileera,II (DNA),TIR,Specific fungal/eukaryotic DNA transposon family.
+IS3EU,II (DNA),TIR,Eukaryotic elements related to bacterial IS3 sequences.
+Kyakuja,II (DNA),TIR,A specific DNA transposon superfamily.
+Plavaka,II (DNA),TIR,Related to the CACTA superfamily.
+Satellite,N/A,Repeats,Not a TE. This is tandemly repeated DNA.
+U,Unknown,Unknown,Totally unclassified/Unknown repetitive sequence.
