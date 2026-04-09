@@ -1,0 +1,20 @@
+{
+    "input": ".\/RNA.samples.csv",
+    "outdir": ".\/results",
+    "email": "johan.reimegard@scilifelab.se",
+    "multiqc_title": "marasmius_germline_RNA",
+    "fasta": "reference\/GCF_018924745.1_UU_Maror_2_genomic.fa",
+    "gff": "annotation\/GCF_018924745.1_UU_Maror_2_genomic.gff",
+    "pseudo_aligner": "salmon",
+    "star_ignore_sjdbgtf": true,
+    "save_reference": true,
+    "save_unaligned": true,
+    "skip_stringtie": true,
+    "skip_qualimap": true,
+    "skip_biotype_qc": true,
+    "skip_markduplicates": true,
+    "project": "naiss2024-5-85",
+    "max_time": "23.h",
+    "max_memory": "100.GB",
+    "max_cpus": 50
+}
