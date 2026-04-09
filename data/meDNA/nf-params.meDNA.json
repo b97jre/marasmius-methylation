@@ -1,0 +1,15 @@
+{
+    "input": ".\/meDNA.samples.csv",
+    "outdir": ".\/results",
+    "email": "johan.reimegard@scilifelab.se",
+    "multiqc_title": "marasmius_germline_meDNA",
+    "save_reference": true,
+    "unmapped": true,
+    "fasta": "reference\/GCF_018924745.1_UU_Maror_2_genomic.fa",
+    "comprehensive": true,
+    "cytosine_report": true,
+    "project": "naiss2024-5-85",
+    "max_time": "23.h",
+    "max_memory": "100.GB",
+    "max_cpus": 50
+}
