@@ -1,19 +1,17 @@
 ---
 title: "Methylation pattern"
-output: html_document
+output:
+ html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+    df_print: paged  # This makes all dataframes scrollable/paginated
 date: "2024-09-11"
 ---
 
 ## setup
 ```{r setup, include=FALSE}
-#if (!require("BiocManager", quietly = TRUE))
-#    install.packages("BiocManager")
 
-#BiocManager::install("clusterProfiler")
-
-
-#if (!require("BiocManager", quietly = TRUE))
-#    install.packages("BiocManager")
 
 knitr::opts_chunk$set(echo = TRUE)
 library(clusterProfiler)
@@ -75,10 +73,11 @@ samples.ring.RNA.df %>%
   mutate(sample = gsub("L","_lamella",sample)) ->
   samples.ring.RNA.df
 samples.ring.RNA.df %>%
-  tidyr::separate(col = sample,into = 
+  tidyr::separate_wider_delim(col = sample,
+                              names = 
                     c("Location","Replicate",
                            "Tissue"),
-           sep = "_" ,remove = FALSE)  ->
+           delim = "_" ,cols_remove = FALSE)  ->
   samples.ring.RNA.df
 
 
@@ -119,10 +118,14 @@ gff3Colnames =c("seqid", "source",
    group_by(seqid,start,end, strand) %>%
    slice_head(n = 1) %>%
    ungroup() %>%
-   separate_longer_delim(attributes, delim = ";") %>%
-   separate(attributes, into = c("key","value"), sep = "=") %>%
+   separate_longer_delim(attributes,
+                         delim = ";") %>%
+   separate_wider_delim(attributes,
+                        names = c("key","value"),
+                        delim = "=") %>%
    filter(key %in% c("Name","locus_tag","product")) %>%
-   pivot_wider(values_from = "value",names_from = "key") -> 
+   pivot_wider(values_from = "value",
+               names_from = "key") -> 
    annotation.mRNA.df
 
  annotation.mRNA.df %>% group_by(product) %>% summarise(n = n())
@@ -182,7 +185,7 @@ annotation.mRNA.df = inner_join(annotation.mRNA.df,relationship_df , by = "Name"
 # scp johanrei@dardel.pdc.kth.se:/cfs/klemming/projects/snic/sllstore2017101/Marasmius/data/ref-genomes/Maror2/Maror2.ipr.tsv . 
 
 
-IPR = read_tsv(here("annotation","GCF_018924745.1_UU_Maror_2_proteins.faa.tsv"), col_names = FALSE)
+IPR = read_tsv(here("annotation","GCF_018924745.1_UU_Maror_2_proteins.faa.tsv.gz"), col_names = FALSE)
 
 # Assign the appropriate column names based on InterProScan TSV format
 colnames(IPR) <- c(
@@ -289,12 +292,13 @@ dds <- dds[rowSums(counts(dds)) > 10, ]
 
 ```
 
+### Run PCA on samples
 ```{r, memory = FALSE, warning = FALSE}
 vsd <- vst(dds, blind = TRUE)
 # Extract expression matrix
 mat <- assay(vsd)
 
-samples.ring.RNA.df %>% filter(Location != "west") ->
+samples.ring.RNA.df  ->
   samples.ring.RNA.df.2
 
 mat = mat[, samples.ring.RNA.df.2$Sample]
@@ -335,13 +339,13 @@ pca_df  %>% select(PC1,PC2,PC3,PC4,
 library(GGally)
 ggpairs(pca_df.2, 
         aes(color = Tissue, shape = Location),
-        columns = 1:7,
+        columns = 1:4,
         lower = list(continuous = wrap("points", size = 2)),
         diag = list(continuous = wrap("barDiag", fill = "grey")))  +
   scale_fill_manual(values = colors)+
   scale_color_manual(values = colors) -> pca_pairs_plot
 
-ggsave(here("figures","Figure4","PCA_vst_normalized_counts.png"),
+ggsave(here("figures","Figure4","PCA_vst_normalized_counts_pairs.png"),
        width = 8, height = 6,plot = pca_pairs_plot)
 
 data.frame(PC = colnames(pca$x), variance = percentVar*100) %>%
