@@ -1,6 +1,11 @@
 ---
 title: "Methylation pattern"
-output: html_document
+output:
+ html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+    theme: flatly
 date: "2024-09-11"
 ---
 
@@ -76,7 +81,7 @@ gff3Colnames =c("seqid", "source",
     rename(Notes = "Superfamily / Notes")
 
   
-  TEFile <- here("annotation","Maror2.repeatmasker.rmlib2.3.gff")
+  TEFile <- here("annotation","Repeat_annotation.gtf")
 
   TEdf =    read_tsv(file = TEFile, col_names = gff3Colnames,comment = "#") %>% separate(attributes, into = c("ID","target"), sep = ";") %>%
     mutate(ID = as.numeric(gsub("ID=","",ID))) %>%
@@ -863,7 +868,7 @@ lmm_results.GB.significant %>%
 lmm_results.GB.Tissue %>% filter(significant == "Yes") %>%
   arrange(adj_pvalue) ->
   lmm_results.GB.Tissue.significant
-
+2
 TE_tissue_DE = intersect(lmm_results.GB.Tissue$TE_ID2,as.numeric( rownames(methylationData.3.QC.GB.wide))) 
 
 methylationData.3.QC.TE.wide[as.character(TE_tissue_DE),]->

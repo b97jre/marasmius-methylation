@@ -1,6 +1,11 @@
 ---
 title: "Methylation pattern"
-output: html_document
+output:
+ html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+    theme: flatly
 date: "2024-09-11"
 ---
 
